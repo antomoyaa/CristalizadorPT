@@ -1,0 +1,8 @@
+git status
+git pull
+git fetch origin --> trae branches que no tengo
+
+No son necesarios por que se hacen desde vs code app
+git push 
+git commit
+git add

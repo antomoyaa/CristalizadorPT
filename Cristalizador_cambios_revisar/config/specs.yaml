@@ -1,0 +1,10 @@
+# Especificación de producto (guía §5). PENDIENTE: pedir a SQM por escrito, con fuente, método y base.
+# Ningún valor de abajo está confirmado; 'null' = sin dato.
+producto_tecnico:
+  wKNO3_min_pct_base_seca: null     # pureza mínima
+  ClO4_max_ppm: 40.0                # PROVISIONAL (informe de parámetros); la evaluación económica usa 100 ppm
+  base: null                        # seca/húmeda; ClO4- o KClO4 (1 ppm ClO4- = 1.393 ppm KClO4)
+  metodo_analitico: "cromatografía iónica"
+  fuente: null
+  fecha: null
+  objetivo_planta_ppm: null         # margen operacional (epsilon del frente de Pareto)

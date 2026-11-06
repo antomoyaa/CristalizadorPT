@@ -14,6 +14,7 @@ Otros lazos del P&ID:
   sobre la dilución) queda como alternativa de estudio, no como P&ID.
   Lazo D propuesto (ppm de laboratorio recortando consigna de densidad): alternativo, no está en el plano.
 """
+
 from __future__ import annotations
 
 from collections import deque
@@ -418,9 +419,12 @@ def imc_pi(K, tau, theta, eps):
     return LoopTuning(Kp=Kp, Ki=Kp / Ti, Kd=0.0, direct=bool(K < 0))
 
 
+_trapz = getattr(np, "trapezoid", getattr(np, "trapz", None))
+
+
 def iae(t_h, e):
-    """Integral del error absoluto (IAE) en [unid * h]."""
-    return float(np.trapezoid(np.abs(e), t_h))
+    """Integral del error absoluto (IAE) en [unid * h], compatible con NumPy 1.x y 2.x."""
+    return float(_trapz(np.abs(e), t_h))
 
 
 def metricas_consigna(t_s, y, y0, y1, t_step, band=0.05):
@@ -430,7 +434,7 @@ def metricas_consigna(t_s, y, y0, y1, t_step, band=0.05):
     over = 100.0 * max(s[m].max() - 1.0, 0.0)
     fuera = np.abs(s[m] - 1.0) > band
     tset = (t_s[m][fuera][-1] - t_step) / 3600.0 if fuera.any() else 0.0
-    iae_val = float(np.trapezoid(np.abs(y[m] - y1), t_s[m]) / 3600.0)
+    iae_val = float(_trapz(np.abs(y[m] - y1), t_s[m]) / 3600.0)
     return over, tset, iae_val
 
 

@@ -75,7 +75,7 @@ PROVENANCE.update({
     "rho_liquid_kg_m3": "interno", "rho_water_kg_m3": "respaldado", "cp_water_J_kg_K": "respaldado",
     "water_mass_fraction_liquor": "interno", "rho_crystal_kg_m3": "respaldado", "kv": "respaldado",
     "density_k_KNO3": "respaldado", "density_k_other": "placeholder",
-    "spec_ClO4_ppm_max": "interno",
+    "spec_ClO4_ppm_max": "interno", "Mg": 32.1115
 })
 
 
@@ -102,6 +102,19 @@ BASIS_KEYS = ["reference_temperature_C", "Cstar_ref_kg_m3", "solubility_slope_K_
               "rho_crystal_kg_m3", "kv", "rho_liquid_kg_m3"]
 CALIBRATED_KEYS = ["kG_m_s", "kB_m3_s_inv", "Kd", "g", "b"]
 
+# Agregar después de BASE_CALIBRACION en msmpr_core/params.py:
+BASE_PLANTA_SQM = {
+    "feed_stock_kg_m3": {
+        "KNO3": 525.2,       # interno: corriente 334 SSK-d (0.3460 * 1518 kg/m3 a 70 °C, informe_parametros.md §2)
+        "ClO4": 5.56379,     # interno: base iónica SSK-d (g/L = kg/m3)
+        "Mg": 32.1114745,    # interno: feed_composition['Mg_g_L'] en Evaporative_MSMPR_DPBE-2.ipynb
+        "OTHER": 354.39,     # resto de sales (NaNO3 + NaCl + SO4 + Ca)
+    },
+    "Cstar_ref_kg_m3": 177.940756,  # datos_cristalizador.xlsx hoja 'solubilidad' a 40 °C
+    "solubility_slope_K_inv": 0.010,
+    "rho_liquid_kg_m3": 1518.0,
+    "solution_cp_J_kg_K": 2248.0,
+}
 
 def _deep_update(p: dict, src: dict) -> None:
     for k, v in src.items():
@@ -118,10 +131,17 @@ def make_params(profile: str = "literatura", **overrides) -> dict:
     profile='calibracion' : base del notebook de Pareto/calibración (ver BASE_CALIBRACION). Con ella, el
                             término de humedad de torta se anula porque su Kd ya absorbe todo el ClO4 del producto seco.
     """
-    if profile not in ("literatura", "calibracion"):
-        raise ValueError("profile debe ser 'literatura' o 'calibracion'")
+    if profile not in ("literatura", "calibracion", "planta_sqm"):
+        raise ValueError("profile debe ser 'literatura', 'calibracion' o 'planta_sqm'")
     p = deepcopy(BASE)
     p["profile"] = profile
+    if profile == "calibracion":
+        src = {k: v for k, v in BASE_CALIBRACION.items() if k != "residence_time"}
+        _deep_update(p, src)
+        p["feed_flow_m3_s"] = BASE_CALIBRACION["volume_m3"] / BASE_CALIBRACION["residence_time"]
+        p["cake_moisture_fraction"] = 0.0
+    elif profile == "planta_sqm":
+        _deep_update(p, BASE_PLANTA_SQM)
     if profile == "calibracion":
         src = {k: v for k, v in BASE_CALIBRACION.items() if k != "residence_time"}
         _deep_update(p, src)

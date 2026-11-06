@@ -90,18 +90,47 @@ class SampledSensor:
 
 
 class DelayedSensor:
-    """Medición continua con tiempo muerto (analizador en línea): entrega el valor de hace `delay_s`. delay_s=0 -> ideal."""
+    """Medición continua con tiempo muerto compatible con PlantController (2 args) y modelo NPT-3 (4-5 args)."""
 
-    def __init__(self, delay_s: float, initial: float):
-        self.delay = delay_s
-        self.value = initial
-        self._queue = deque()
+    def __init__(self, delay_s: float, initial: float = 0.0, dt_min: float | None = None, initial_val: float | None = None, resolution: float = 0.0):
+        if dt_min is None and initial_val is None:
+            # Modo original de PlantController: DelayedSensor(delay_s, initial)
+            self.delay = float(delay_s)
+            self.value = float(initial)
+            self._queue = deque()
+            self._npt3_mode = False
+        else:
+            # Modo discreto para modelo NPT-3: DelayedSensor(theta_min, tau_m_min, dt_min, initial_val, resolution)
+            theta_min = float(delay_s)
+            tau_m_min = float(initial)
+            self.delay_steps = max(int(round(theta_min / float(dt_min))), 1)
+            self.buffer = deque([initial_val] * self.delay_steps, maxlen=self.delay_steps)
+            self.tau_m = tau_m_min
+            self.dt = float(dt_min)
+            self.filtered_val = initial_val
+            self.res = resolution
+            self._npt3_mode = True
 
-    def read(self, t, true_value):
-        self._queue.append((t + self.delay, true_value))
-        while self._queue and self._queue[0][0] <= t + 1e-9:
-            self.value = self._queue.popleft()[1]
-        return self.value
+    def read(self, t_or_val, true_value=None):
+        if not self._npt3_mode and true_value is not None:
+            # Llamado por PlantController: sensor.read(t, true_value)
+            t = float(t_or_val)
+            self._queue.append((t + self.delay, true_value))
+            while self._queue and self._queue[0][0] <= t + 1e-9:
+                self.value = self._queue.popleft()[1]
+            return self.value
+        else:
+            # Llamado por modelo NPT-3: sensor.read(true_val)
+            val = t_or_val
+            self.buffer.append(val)
+            delayed = self.buffer[0]
+            if self.tau_m > 0:
+                self.filtered_val += (self.dt / self.tau_m) * (delayed - self.filtered_val)
+            else:
+                self.filtered_val = delayed
+            if self.res > 0:
+                return round(self.filtered_val / self.res) * self.res
+            return self.filtered_val
 
 
 # ------------------------------------------------------------------ identificación y sintonía
@@ -316,12 +345,7 @@ def autotune(plant, x_ss, u_ss, d, aggressiveness=1.0, t_test_h=6.0, dt_s=10.0, 
 
 
 def tune_ppm_loop(plant, u_ss_alpha=None, delta_d=0.02, lab_delay_s=3600.0, lab_period_s=7200.0, tau_s=None):
-    """Lazo D (propuesto): ppm ClO4 -> consigna de densidad del lazo C.
-
-    Ganancia estática K = d(ppm)/d(densidad de pulpa) obtenida de dos estacionarios con distinta dilución
-    (la dilución es la palanca de C). Tiempo muerto = retardo del laboratorio + medio periodo de muestreo.
-    Devuelve (LoopTuning, info, sp_limits_kg_m3).
-    """
+    """Lazo D (propuesto): ppm ClO4 -> consigna de densidad del lazo C."""
     from .plant import Plant
     p = plant.p
     x0, u0, d0 = plant.steady_state(alpha=u_ss_alpha)
@@ -340,11 +364,8 @@ def tune_ppm_loop(plant, u_ss_alpha=None, delta_d=0.02, lab_delay_s=3600.0, lab_
     return (LoopTuning(Kp=Kp, Ki=Kp / Ti, direct=direct),
             {"K_ppm_per_kg_m3": K, "tau_s": tau, "theta_s": theta, "drho_kg_m3": drho}, lim)
 
-#Para que todos los cuadernos del repositorio **CristalizadorPT_add** compartan las herramientas de los tres archivos **.ipynb**, se añaden al final de **msmpr_core/control.py** las clases y funciones de consigna variable, ruido coloreado de Ornstein-Uhlenbeck, sintonía IMC, métricas servo, criterio de estabilidad Routh-Hopf y controladores industriales con retardo:
-# === EXTENSIONES INTEGRADAS: LAZO ABIERTO/CERRADO, RUIDO, IMC Y ROUTH-HOPF ===
-from collections import deque
-import numpy as np
 
+# === EXTENSIONES INTEGRADAS: LAZO ABIERTO/CERRADO, RUIDO, IMC Y ROUTH-HOPF ===
 class ConsignaVariable:
     """Envoltorio de PlantController para cambios de consigna dinámicos (escalón/rampa)."""
     def __init__(self, ctrl, funcs):
@@ -450,28 +471,6 @@ def routh_hopf_analysis(Kp, tau_p, theta, tau_I):
         "Kc_TL": sgn * (Kc_hopf / 3.2),
         "tau_I_TL": float(2.2 * tau_u),
     }
-
-
-class DelayedSensor:
-    """Sensor con retardo de transporte/análisis (theta), filtro (tau_m) y cuantización."""
-    def __init__(self, theta_min, tau_m_min, dt_min, initial_val, resolution=0.0):
-        self.delay_steps = max(int(round(theta_min / dt_min)), 1)
-        self.buffer = deque([initial_val] * self.delay_steps, maxlen=self.delay_steps)
-        self.tau_m = tau_m_min
-        self.dt = dt_min
-        self.filtered_val = initial_val
-        self.res = resolution
-
-    def read(self, true_val):
-        self.buffer.append(true_val)
-        delayed = self.buffer[0]
-        if self.tau_m > 0:
-            self.filtered_val += (self.dt / self.tau_m) * (delayed - self.filtered_val)
-        else:
-            self.filtered_val = delayed
-        if self.res > 0:
-            return round(self.filtered_val / self.res) * self.res
-        return self.filtered_val
 
 
 class CommercialPID:

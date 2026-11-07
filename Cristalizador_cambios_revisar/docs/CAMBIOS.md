@@ -63,3 +63,16 @@ Obliga a declarar equipo y origen, y a pasar volumen y alimentación (no vienen 
 
 ### Pruebas Automatizadas (tests/)
 - **tests/test_control_integrado.py**: Suite en `pytest` que verifica reposo estacionario, balances integradores, offset nulo a 24 h, precarga sin salto para $\beta \neq 1$, límites de Hopf y cumplimiento de $< 40\text{ ppm}$ en el producto final.
+
+## [v2.1.0] - Revisión: vacío, trim de AIT 3105, lazo de nivel
+- `plant.VAC`: consignas y ganancias de vacío coherentes con DWSIM/Antoine (antes -0.932 bar para 55 C y K = 375 K/bar).
+- `plant.K_TRIM_AIT = 5.2e-5` unificado (antes 5.2e-4 en dos funciones: saturaba FIRC 3103).
+- **Lazo de nivel** en `simulate_plant_npt3_calibrated`: balance de inventario de A3110 y A3210 (`LEVEL`), LIC manda el caudal de descarga (F_6, F_11) y el maestro de densidad (DIC) ajusta la consigna de nivel (cascada DIC -> LIC). Nuevas columnas: `L1, L2, M1_t, M2_t, L1_sp, L2_sp, dMass_A3110_t_h, dMass_A3210_t_h`.
+- `params.EMPIRICAL_COEFFS`: coeficientes empíricos etiquetados como placeholder. `.gitignore` agregado.
+- Pruebas nuevas: `tests/test_revision_vacio_trim_balance.py`.
+
+## [v2.2.0] - Nivel 60 %, vínculo vacío -> T -> granulometría
+- Nivel de A3110/A3210 con consigna fija de 60 % (`LEVEL["level_sp_pct"]`); la cascada densidad -> nivel queda opcional (`density_cascade=True`). Columnas `level1_pct`, `level2_pct`.
+- `plant.vac_T(P, etapa)` / `vac_P(T, etapa)`: T = Tsat_agua(P) + elevación del punto de ebullición (ajustada a DWSIM: 11,59 kPa -> 55 C; 5,43 kPa -> 40 C). K1, K2 se calculan de esta función (≈161 y ≈320 K/bar; los 133/255 de v2.1.0 ignoraban la elevación del punto de ebullición).
+- `plant.granulometria_estacionaria(P1, P2, ...)` y D50 dinámico en `simulate_plant_npt3_calibrated`: P -> T -> sobresaturación (MSMPR `dpbe`) -> D50, anclado a los D50 de planta (541 / 514 um, reporte de seguimiento, agosto 2026). Se reemplaza el término empírico `sigma_burst`. Columnas `d50_1_um`, `d50_2_um`, `sigma1`, `sigma2`.
+- OJO: la sensibilidad usa la cinética placeholder del perfil `planta_sqm`; con ella +-0,02 bar mueve el D50 ~3-5 %.

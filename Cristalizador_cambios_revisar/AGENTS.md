@@ -20,6 +20,7 @@ control PID. Código en `msmpr_core/`; notebooks numerados en `notebooks/`; dato
 - Nunca llevar a BASE valores calibrados con `origin = synthetic`.
 
 ## Reglas
+0. El tren integrado (`simulate_plant_npt3_calibrated` y afines) es EMPÍRICO: sus coeficientes están en `params.EMPIRICAL_COEFFS` como placeholder; no citar sus ppm como predicción.
 1. No inventar datos ni parámetros. Todo valor tiene etiqueta en `params.PROVENANCE`: respaldado / interno / placeholder.
 2. No cambiar unidades ni la base de concentración. No borrar código existente. No silenciar errores con try/except vacíos.
 3. Todo dato sintético se rotula como tal (tablas, figuras, texto).
@@ -27,7 +28,7 @@ control PID. Código en `msmpr_core/`; notebooks numerados en `notebooks/`; dato
 5. Los tags de instrumentos vienen del P&ID 172164 hoja 10 (A3110). Lo no leído del plano se declara como supuesto.
 
 ## Criterios de aceptación mínimos
-- Y entre 0.3 y 0.7 en el caso base calibrado (hoy NO se cumple: C*_ref y la alimentación son placeholders).
+- Y entre 0.3 y 0.7: se cumple con `make_params("planta_sqm")` (Y ~ 64 %); con 'literatura' y 'calibracion' NO (C*_ref y alimentación placeholder).
 - Y_liq = Y_sol (|dif| < 1e-6).  El ajuste recupera parámetros sintéticos dentro de IC95.
 - En lazo abierto el estacionario no deriva.
 

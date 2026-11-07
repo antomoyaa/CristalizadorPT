@@ -82,6 +82,22 @@ PROVENANCE.update({
 })
 
 
+# Coeficientes EMPÍRICOS del tren integrado (plant.simulate_plant_npt3_calibrated y afines). No son mecanísticos ni están
+# calibrados con datos de planta: etiqueta 'placeholder' (AGENTS.md regla 1). Entran en placeholders().
+EMPIRICAL_COEFFS = {
+    "vac_P1_P2_nom": "interno: Entrega 2, DWSIM (11.59 / 5.43 kPa abs)",
+    "vac_K1_K2": "respaldado: Antoine (agua) 133 / 255 K/bar; no incluye elevación de punto de ebullición de la salmuera",
+    "vac_limits": "placeholder: rango de la válvula de vacío",
+    "K_TRIM_AIT": "placeholder: 5.2e-5 1/ppm (compensa ~40 % del exceso; decisión económica)",
+    "coprecip_threshold_ClO4_g_L": "placeholder: 4.0-4.5 g/L ClO4 (= 5.6-6.3 g/L KClO4; ensayo 6.54 g/L a 40 C, x1.393)",
+    "coprecip_slope_ppm_per_g_L": "placeholder: 82-125 ppm por g/L",
+    "moisture_d50_exponent": "placeholder: 0.55-0.65", "rem_eff_d50_exponent": "placeholder: 0.65-0.85",
+    "rem_eff_6000_base": "interno: 0.899 (Compilado pruebas A6000)",
+    "xS_d50_gains": "placeholder: ganancias de xS, d50, T",
+    "level_loop": "placeholder: tauc 6 min, xS_level_gain 1.0, L_sp_lim 0.9-1.1, Kc_dens 3.0; tau1/tau2 0.7/1.4 h son del protocolo (Entrega 2)",
+}
+PROVENANCE.update({f"empirico.{k}": ("placeholder" if v.startswith("placeholder") else v.split(":")[0]) for k, v in EMPIRICAL_COEFFS.items()})
+
 # ---------------------------------------------------------------------------------------------
 # Perfil 'calibracion': la base EXACTA del notebook MSMPR_KNO3_DPBE_sensibilidad_Pareto.ipynb, que es el modelo
 # que usa calibracion_do_crystal.ipynb. Los kG, kB y Kd que se calibren allí solo valen sobre ESTA base

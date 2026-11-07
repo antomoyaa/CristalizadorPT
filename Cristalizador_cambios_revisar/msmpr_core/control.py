@@ -91,7 +91,12 @@ class SampledSensor:
 
 
 class DelayedSensor:
-    """Medición continua con tiempo muerto compatible con PlantController (2 args) y modelo NPT-3 (4 a 7 args)."""
+    """Medición continua con tiempo muerto compatible con PlantController (2 args) y modelo NPT-3 (4 a 7 args).
+
+    ATENCIÓN UNIDADES: en modo PlantController (2 args) `delay_s` está en SEGUNDOS y el 2º arg es el valor inicial.
+    En modo NPT-3 (si se pasa dt_min o initial_val) el 1er arg es el retardo en MINUTOS y el 2º es la constante de
+    tiempo del filtro en minutos (tau_m). Preferir argumentos con nombre. TODO: separar en dos clases.
+    """
 
     def __init__(
         self,

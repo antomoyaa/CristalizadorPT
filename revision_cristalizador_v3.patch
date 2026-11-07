@@ -1,0 +1,848 @@
+diff --git a/Cristalizador_cambios_revisar/.gitignore b/Cristalizador_cambios_revisar/.gitignore
+new file mode 100644
+index 0000000..5877002
+--- /dev/null
++++ b/Cristalizador_cambios_revisar/.gitignore
+@@ -0,0 +1,4 @@
++__pycache__/
++*.pyc
++.DS_Store
++.ipynb_checkpoints/
+diff --git a/Cristalizador_cambios_revisar/AGENTS.md b/Cristalizador_cambios_revisar/AGENTS.md
+index 1ffe268..c9f13f7 100644
+--- a/Cristalizador_cambios_revisar/AGENTS.md
++++ b/Cristalizador_cambios_revisar/AGENTS.md
+@@ -20,6 +20,7 @@ control PID. Código en `msmpr_core/`; notebooks numerados en `notebooks/`; dato
+ - Nunca llevar a BASE valores calibrados con `origin = synthetic`.
+ 
+ ## Reglas
++0. El tren integrado (`simulate_plant_npt3_calibrated` y afines) es EMPÍRICO: sus coeficientes están en `params.EMPIRICAL_COEFFS` como placeholder; no citar sus ppm como predicción.
+ 1. No inventar datos ni parámetros. Todo valor tiene etiqueta en `params.PROVENANCE`: respaldado / interno / placeholder.
+ 2. No cambiar unidades ni la base de concentración. No borrar código existente. No silenciar errores con try/except vacíos.
+ 3. Todo dato sintético se rotula como tal (tablas, figuras, texto).
+@@ -27,7 +28,7 @@ control PID. Código en `msmpr_core/`; notebooks numerados en `notebooks/`; dato
+ 5. Los tags de instrumentos vienen del P&ID 172164 hoja 10 (A3110). Lo no leído del plano se declara como supuesto.
+ 
+ ## Criterios de aceptación mínimos
+-- Y entre 0.3 y 0.7 en el caso base calibrado (hoy NO se cumple: C*_ref y la alimentación son placeholders).
++- Y entre 0.3 y 0.7: se cumple con `make_params("planta_sqm")` (Y ~ 64 %); con 'literatura' y 'calibracion' NO (C*_ref y alimentación placeholder).
+ - Y_liq = Y_sol (|dif| < 1e-6).  El ajuste recupera parámetros sintéticos dentro de IC95.
+ - En lazo abierto el estacionario no deriva.
+ 
+diff --git a/Cristalizador_cambios_revisar/docs/CAMBIOS.md b/Cristalizador_cambios_revisar/docs/CAMBIOS.md
+index bf6550e..0dac540 100644
+--- a/Cristalizador_cambios_revisar/docs/CAMBIOS.md
++++ b/Cristalizador_cambios_revisar/docs/CAMBIOS.md
+@@ -62,4 +62,17 @@ Obliga a declarar equipo y origen, y a pasar volumen y alimentación (no vienen
+ - **notebooks/06_Control_por_etapas_dilucion.ipynb**: Evalúa la cascada `AIT 3105 -> FFIC 3102 -> FIRC 3103` frente a razón fija sin analizador y el impacto del retardo $\theta_{\text{AIT}}$ junto con la purga `AIC 3255 -> FV 3522`.
+ 
+ ### Pruebas Automatizadas (tests/)
+-- **tests/test_control_integrado.py**: Suite en `pytest` que verifica reposo estacionario, balances integradores, offset nulo a 24 h, precarga sin salto para $\beta \neq 1$, límites de Hopf y cumplimiento de $< 40\text{ ppm}$ en el producto final.
+\ No newline at end of file
++- **tests/test_control_integrado.py**: Suite en `pytest` que verifica reposo estacionario, balances integradores, offset nulo a 24 h, precarga sin salto para $\beta \neq 1$, límites de Hopf y cumplimiento de $< 40\text{ ppm}$ en el producto final.
++
++## [v2.1.0] - Revisión: vacío, trim de AIT 3105, lazo de nivel
++- `plant.VAC`: consignas y ganancias de vacío coherentes con DWSIM/Antoine (antes -0.932 bar para 55 C y K = 375 K/bar).
++- `plant.K_TRIM_AIT = 5.2e-5` unificado (antes 5.2e-4 en dos funciones: saturaba FIRC 3103).
++- **Lazo de nivel** en `simulate_plant_npt3_calibrated`: balance de inventario de A3110 y A3210 (`LEVEL`), LIC manda el caudal de descarga (F_6, F_11) y el maestro de densidad (DIC) ajusta la consigna de nivel (cascada DIC -> LIC). Nuevas columnas: `L1, L2, M1_t, M2_t, L1_sp, L2_sp, dMass_A3110_t_h, dMass_A3210_t_h`.
++- `params.EMPIRICAL_COEFFS`: coeficientes empíricos etiquetados como placeholder. `.gitignore` agregado.
++- Pruebas nuevas: `tests/test_revision_vacio_trim_balance.py`.
++
++## [v2.2.0] - Nivel 60 %, vínculo vacío -> T -> granulometría
++- Nivel de A3110/A3210 con consigna fija de 60 % (`LEVEL["level_sp_pct"]`); la cascada densidad -> nivel queda opcional (`density_cascade=True`). Columnas `level1_pct`, `level2_pct`.
++- `plant.vac_T(P, etapa)` / `vac_P(T, etapa)`: T = Tsat_agua(P) + elevación del punto de ebullición (ajustada a DWSIM: 11,59 kPa -> 55 C; 5,43 kPa -> 40 C). K1, K2 se calculan de esta función (≈161 y ≈320 K/bar; los 133/255 de v2.1.0 ignoraban la elevación del punto de ebullición).
++- `plant.granulometria_estacionaria(P1, P2, ...)` y D50 dinámico en `simulate_plant_npt3_calibrated`: P -> T -> sobresaturación (MSMPR `dpbe`) -> D50, anclado a los D50 de planta (541 / 514 um, reporte de seguimiento, agosto 2026). Se reemplaza el término empírico `sigma_burst`. Columnas `d50_1_um`, `d50_2_um`, `sigma1`, `sigma2`.
++- OJO: la sensibilidad usa la cinética placeholder del perfil `planta_sqm`; con ella +-0,02 bar mueve el D50 ~3-5 %.
+diff --git a/Cristalizador_cambios_revisar/docs/ROADMAP_control_por_etapas.md b/Cristalizador_cambios_revisar/docs/ROADMAP_control_por_etapas.md
+index c8649e6..75a44f6 100644
+--- a/Cristalizador_cambios_revisar/docs/ROADMAP_control_por_etapas.md
++++ b/Cristalizador_cambios_revisar/docs/ROADMAP_control_por_etapas.md
+@@ -9,7 +9,7 @@ Regla: **un lazo nuevo por etapa; antes de cerrarlo, reidentificar el proceso co
+ | 1 | FIRC 3103 (caudal de dilución) | PI por SIMC con tau_c >= 2·dt; consigna externa; ruido de medición; perturbación de ganancia de la válvula; límites | sigue la consigna (<2 %), rechaza la perturbación (<3 %), no satura, no oscila | hecho (`test_stage1_*`, notebook 06) |
+ | 2 | FFIC 3102 (razón dilución/alimentación) | La consigna de FIRC 3103 pasa a ser R × caudal de alimentación; la dilución sigue las variaciones de alimentación | la razón dilución/alimentación se mantiene dentro de 2 % ante +12 % de alimentación | hecho (`test_ratio_mode_*`, notebook 05) |
+ | 2b | AIT 3105 (ClO4 de entrada) | Ley de razón sobre el ClO4 medido, con ganancia y límites; barrer el retardo del analizador (aún sin definir) | ppm del pulso y recuperación mínima aceptables para la ganancia y el retardo definidos | hecho en simulación (`test_ait_*`); falta definir retardo, ganancia y capacidad de la válvula |
+-| 3 | nivel (LIRCSAHL 3101) | La dilución agrega volumen: cerrar V y reidentificar el maestro | V dentro de ±1 % ante el escalón de dilución | implementado en el modelo; falta ensayo por etapas |
++| 3 | nivel (LIRCSAHL 3101) | La dilución agrega volumen: cerrar V y reidentificar el maestro | V dentro de ±1 % ante el escalón de dilución | implementado en A3110 (`plant.py`) y en el tren integrado A3110/A3210 (cascada DIC -> LIC, `test_nivel_*`); falta reidentificar con datos de planta |
+ | 4 | T/vacío (PIRCSAHL 3101) | Calcular la matriz de ganancias y la RGA de los pares candidatos antes de cerrar | pareamiento justificado; sin interacción destructiva | pendiente |
+ | 5 | ppm de ClO4 (propuesto) y prealimentación | Retardo de laboratorio (muestreo 2 h, entrega 1 h); prealimentación con Q_stock, T_feed y ClO4 de alimentación | pico de ppm menor sin saturar la dilución | modelo del lazo hecho; prealimentación pendiente |
+ | 6 | opcional | MPC/NMPC (do-mpc en `examples/two_stage_msmpr`) con el modelo calibrado | mejora frente a PID con las mismas perturbaciones | pendiente |
+diff --git a/Cristalizador_cambios_revisar/msmpr_core/control.py b/Cristalizador_cambios_revisar/msmpr_core/control.py
+index f9481b7..938c799 100644
+--- a/Cristalizador_cambios_revisar/msmpr_core/control.py
++++ b/Cristalizador_cambios_revisar/msmpr_core/control.py
+@@ -91,7 +91,12 @@ class SampledSensor:
+ 
+ 
+ class DelayedSensor:
+-    """Medición continua con tiempo muerto compatible con PlantController (2 args) y modelo NPT-3 (4 a 7 args)."""
++    """Medición continua con tiempo muerto compatible con PlantController (2 args) y modelo NPT-3 (4 a 7 args).
++
++    ATENCIÓN UNIDADES: en modo PlantController (2 args) `delay_s` está en SEGUNDOS y el 2º arg es el valor inicial.
++    En modo NPT-3 (si se pasa dt_min o initial_val) el 1er arg es el retardo en MINUTOS y el 2º es la constante de
++    tiempo del filtro en minutos (tau_m). Preferir argumentos con nombre. TODO: separar en dos clases.
++    """
+ 
+     def __init__(
+         self,
+diff --git a/Cristalizador_cambios_revisar/msmpr_core/dpbe.py b/Cristalizador_cambios_revisar/msmpr_core/dpbe.py
+index f08ef02..51d62e2 100644
+--- a/Cristalizador_cambios_revisar/msmpr_core/dpbe.py
++++ b/Cristalizador_cambios_revisar/msmpr_core/dpbe.py
+@@ -14,7 +14,6 @@ from scipy.stats import gamma as _gamma
+ 
+ from .params import R_GAS
+ 
+-T_REF_K = 313.15
+ 
+ 
+ # ------------------------------------------------------------------ termodinámica y cinética
+@@ -26,8 +25,7 @@ def cstar(T_C: float, p: dict) -> float:
+ def kinetics(C: float, T_C: float, p: dict):
+     """Devuelve (sigma, G [m/s], B [#/(m3 s)]). sigma = C/C* - 1 (0 si subsaturado)."""
+     sigma = max(C / cstar(T_C, p) - 1.0, 0.0)
+-    arr = math.exp(-p.get("Eg_J_mol", 0.0) / R_GAS * (1.0 / (T_C + 273.15) - 1.0 / T_REF_K))
+-    enable_dissolution=True
++    arr = math.exp(-p.get("Eg_J_mol", 0.0) / R_GAS * (1.0 / (T_C + 273.15) - 1.0 / (p["reference_temperature_C"] + 273.15)))
+     G = p["kG_m_s"] * arr * sigma ** p["g"]
+     B = p["kB_m3_s_inv"] * sigma ** p["b"]
+     return sigma, G, B
+diff --git a/Cristalizador_cambios_revisar/msmpr_core/params.py b/Cristalizador_cambios_revisar/msmpr_core/params.py
+index 672d5ad..ce5e281 100644
+--- a/Cristalizador_cambios_revisar/msmpr_core/params.py
++++ b/Cristalizador_cambios_revisar/msmpr_core/params.py
+@@ -82,6 +82,22 @@ PROVENANCE.update({
+ })
+ 
+ 
++# Coeficientes EMPÍRICOS del tren integrado (plant.simulate_plant_npt3_calibrated y afines). No son mecanísticos ni están
++# calibrados con datos de planta: etiqueta 'placeholder' (AGENTS.md regla 1). Entran en placeholders().
++EMPIRICAL_COEFFS = {
++    "vac_P1_P2_nom": "interno: Entrega 2, DWSIM (11.59 / 5.43 kPa abs)",
++    "vac_K1_K2": "respaldado: Antoine (agua) 133 / 255 K/bar; no incluye elevación de punto de ebullición de la salmuera",
++    "vac_limits": "placeholder: rango de la válvula de vacío",
++    "K_TRIM_AIT": "placeholder: 5.2e-5 1/ppm (compensa ~40 % del exceso; decisión económica)",
++    "coprecip_threshold_ClO4_g_L": "placeholder: 4.0-4.5 g/L ClO4 (= 5.6-6.3 g/L KClO4; ensayo 6.54 g/L a 40 C, x1.393)",
++    "coprecip_slope_ppm_per_g_L": "placeholder: 82-125 ppm por g/L",
++    "moisture_d50_exponent": "placeholder: 0.55-0.65", "rem_eff_d50_exponent": "placeholder: 0.65-0.85",
++    "rem_eff_6000_base": "interno: 0.899 (Compilado pruebas A6000)",
++    "xS_d50_gains": "placeholder: ganancias de xS, d50, T",
++    "level_loop": "placeholder: tauc 6 min, xS_level_gain 1.0, L_sp_lim 0.9-1.1, Kc_dens 3.0; tau1/tau2 0.7/1.4 h son del protocolo (Entrega 2)",
++}
++PROVENANCE.update({f"empirico.{k}": ("placeholder" if v.startswith("placeholder") else v.split(":")[0]) for k, v in EMPIRICAL_COEFFS.items()})
++
+ # ---------------------------------------------------------------------------------------------
+ # Perfil 'calibracion': la base EXACTA del notebook MSMPR_KNO3_DPBE_sensibilidad_Pareto.ipynb, que es el modelo
+ # que usa calibracion_do_crystal.ipynb. Los kG, kB y Kd que se calibren allí solo valen sobre ESTA base
+diff --git a/Cristalizador_cambios_revisar/msmpr_core/plant.py b/Cristalizador_cambios_revisar/msmpr_core/plant.py
+index ddbfb98..95e7654 100644
+--- a/Cristalizador_cambios_revisar/msmpr_core/plant.py
++++ b/Cristalizador_cambios_revisar/msmpr_core/plant.py
+@@ -4,7 +4,8 @@ UNA sola fuente de ecuaciones: `rhs` es el modelo dinámico y el estado estacion
+ (así, en lazo abierto y en el estacionario, el modelo no se mueve; ver tests/test_core.py).
+ 
+ Simplificaciones (declaradas):
+-  * C y CP son concentraciones por m3 de pulpa; el volumen de cristales (<3 %) se desprecia en los caudales.
++  * C y CP son concentraciones por m3 de pulpa; el volumen de cristales se desprecia en los caudales. OJO: en A3110 es ~13 % másico (~9 % en volumen) y en A3210 ~20 %
++    (Entrega 2), no <3 %; supuesto optimista a revisar (afecta Q_out, tau y la recuperación).
+   * Todo el caudal de descarga Q_out pasa por la separación: licor madre Q_ML = Q_out; purga alpha*Q_ML, reciclo (1-alpha)*Q_ML.
+   * Tanque de licor madre de volumen constante, mezcla perfecta.
+   * La humedad de la torta solo entra en la calidad del producto (ppm), no en los balances.
+@@ -21,6 +22,8 @@ from __future__ import annotations
+ 
+ from dataclasses import dataclass, field
+ 
++import math
++
+ import numpy as np
+ from scipy.optimize import root
+ 
+@@ -28,6 +31,112 @@ from . import dpbe
+ 
+ NAMES = ["V", "T", "C", "CP", "mu0", "mu1", "mu2", "mu3", "Cm", "CPm", "Qd", "S", "Sm"]
+ IDX = {n: i for i, n in enumerate(NAMES)}
++
++# --- Constantes del tren integrado NPT-3 (todas PLACEHOLDER salvo que se indique; ver params.EMPIRICAL_COEFFS) ---
++# Vacío: presión manométrica [bar] que da la T de cada cristalizador. Fuente: Entrega 2, DWSIM (11.59 kPa a 55 C; 5.43 kPa a 40 C,
++# salmuera con elevación del punto de ebullición). K = dT/dP [K/bar] de Antoine (agua) a 55 y 40 C: 133 y 255.
++VAC = {
++    "P1_nom": (11.59 - 101.325) / 100.0, "P2_nom": (5.43 - 101.325) / 100.0,   # -0.897 / -0.959 bar man
++    "K1": 133.0, "K2": 255.0,
++    "P1_lim": (-0.920, -0.870), "P2_lim": (-0.975, -0.940),                      # (min, max) supuestos de diseño
++    "Kc_scale1": 375.0 / 133.0, "Kc_scale2": 375.0 / 255.0,                      # conserva la ganancia de lazo con que se sintonizó
++}
++K_TRIM_AIT = 5.2e-5          # [1/ppm] razón extra de dilución por ppm de ClO4 sobre 3714.1 (placeholder; decisión económica)
++F303_NOM, F_PRE_NOM = 27.14, 378.18
++R_0_NOM = F303_NOM / F_PRE_NOM          # 0.07176: razón dilución / alimentación previa (no es feed_dilution_fraction)
++F_VAPOR_A3110, F_PERDIDAS_A3110 = 10.03, 5.06   # t/h, balance de masa detallado
++# Lazo de nivel (LIRCSAHL 3101 / 3201): inventario M [t] = tau * F nominal; nivel normalizado L = M / M_nom (SP = 1).
++# tau de 0.7 h (A3110) y 1.4 h (A3210): protocolo experimental, Entrega 2. F_25 = F_21 (Supuesto 10) -> A3210 no acumula por reposición.
++LEVEL = {"tau1_h": 0.7, "tau2_h": 1.4, "F_nom": 390.23, "tauc_min": 6.0, "tauI_factor": 4.0,   # tauc, tauI: placeholder
++         "xS_level_gain": 1.0,       # placeholder: d(xS)/xS = gain * d(L)/L (mas retencion -> mas cristal); sin dato de planta
++         "L_sp_lim": (0.90, 1.10),   # placeholder: rango de la consigna de nivel que puede dar el lazo de densidad
++         "Kc_dens": 3.0,             # placeholder: [L / fraccion de solidos] del maestro de densidad (cascada DIC -> LIC)
++         "level_sp_pct": 60.0}       # SP de nivel de A3110 y A3210 [% de la escala LIRCSAHL] (dato del usuario); L = 1 <-> 60 %
++
++# Granulometria (vinculo vacio -> T -> sobresaturacion -> d50). Anclas = D50 medidos en planta (Reporte seguimiento cristalizadores NPT3,
++# agosto 2026: promedios del under de A3110 y A3210). La SENSIBILIDAD viene del modelo MSMPR (dpbe) con cinetica placeholder.
++GRANULO = {"D50_nom1_um": 541.0, "D50_nom2_um": 514.0, "perfil": "planta_sqm",
++           "C_in1_nom_kg_m3": 525.228 * 405.32 / (405.32 - 10.03),   # KNO3 en la alimentacion a A3110 ya concentrada por el flash (placeholder)
++           "update_every_min": 1.0, "tau_d50_min": 18.0, "d50_floor_frac": 0.49}
++
++
++def tsat_water_C(P_abs_kPa):
++    """Temperatura de saturacion del agua [C] a P absoluta [kPa] (Antoine, 1-100 C)."""
++    return 1730.63 / (8.07131 - math.log10(P_abs_kPa / 0.133322)) - 233.426
++
++
++# Elevacion del punto de ebullicion de la salmuera [C]: se ajusta para que las presiones de DWSIM den las T de operacion.
++_BPE = {1: 55.0 - tsat_water_C(11.59), 2: 40.0 - tsat_water_C(5.43)}
++
++
++def vac_T(P_bar_man, stage):
++    """Temperatura de equilibrio del cristalizador `stage` (1: A3110, 2: A3210) para una presion de vacio [bar man]: Tsat(P) + BPE."""
++    return tsat_water_C(max(101.325 + 100.0 * P_bar_man, 0.5)) + _BPE[stage]
++
++
++def vac_P(T_C, stage):
++    """Inversa de vac_T: presion de vacio [bar man] que da la temperatura T_C."""
++    Tw = T_C - _BPE[stage]
++    return (10 ** (8.07131 - 1730.63 / (Tw + 233.426)) * 0.133322 - 101.325) / 100.0
++
++
++# K = dT/dP [K/bar] en el nominal, derivada numerica de vac_T (incluye la elevacion del punto de ebullicion: el agua equivalente
++# esta ~6 C mas fria que la salmuera, donde la curva P-T es mas empinada). Reemplaza los valores 133/255 calculados sin BPE.
++_h = 1e-4
++for _n, _k in ((1, "K1"), (2, "K2")):
++    _P = VAC["P%d_nom" % _n]
++    VAC[_k] = (vac_T(_P + _h, _n) - vac_T(_P - _h, _n)) / (2 * _h)
++    VAC["Kc_scale%d" % _n] = 375.0 / VAC[_k]
++
++_PERFILES = {}
++
++
++def _d50_mech(C_in, tau_h, T_C):
++    """(d50 [um], sigma, C [kg/m3]) del MSMPR estacionario a T_C. Devuelve d50 = 0 si no hay sobresaturacion."""
++    from . import params as _params
++    p = _PERFILES.setdefault(GRANULO["perfil"], _params.make_params(GRANULO["perfil"]))
++    r = dpbe.stationary_msmpr(C_in, tau_h * 3600.0, T_C, p)
++    return float(r["d50"]) * 1e6, float(r["sigma"]), float(r["C"])
++
++
++def _C_in1(F_pre, F_303):
++    return GRANULO["C_in1_nom_kg_m3"] * (F_pre / (F_pre + F_303)) / (F_PRE_NOM / (F_PRE_NOM + F303_NOM))
++
++
++def _cadena_d50(T1, T2, tau1_h, tau2_h, F_pre, F_303):
++    d1, s1, C1 = _d50_mech(_C_in1(F_pre, F_303), tau1_h, T1)
++    d2, s2, _ = _d50_mech(C1, tau2_h, T2)           # la etapa 2 recibe el licor de la etapa 1 (sin semillas: simplificacion)
++    return d1, d2, s1, s2
++
++
++_REF_CACHE = {}
++
++
++def _ref_nominal():
++    if "v" not in _REF_CACHE:
++        _REF_CACHE["v"] = _cadena_d50(55.0, 40.0, LEVEL["tau1_h"], LEVEL["tau2_h"], F_PRE_NOM, F303_NOM)
++    return _REF_CACHE["v"]
++
++
++def granulometria_estacionaria(P_vac1_bar=None, P_vac2_bar=None, F_pre=F_PRE_NOM, F_303=F303_NOM,
++                               tau1_h=None, tau2_h=None):
++    """Vinculo estacionario P de vacio -> T -> sobresaturacion -> D50 de A3110 y A3210.
++
++    T2 incluye el acople con la etapa 1 (0.40 K/K) usado en el modelo dinamico. D50 = D50_nominal * (d50_mec / d50_mec_nominal).
++    La magnitud de la sensibilidad depende de la cinetica placeholder (kG, kB, g, b); no es un resultado de planta
++    hasta calibrar con los protocolos de nucleacion y solubilidad.
++    """
++    P1 = VAC["P1_nom"] if P_vac1_bar is None else P_vac1_bar
++    P2 = VAC["P2_nom"] if P_vac2_bar is None else P_vac2_bar
++    tau1_h = LEVEL["tau1_h"] if tau1_h is None else tau1_h
++    tau2_h = LEVEL["tau2_h"] if tau2_h is None else tau2_h
++    T1 = vac_T(P1, 1)
++    T2 = vac_T(P2, 2) + 0.40 * (T1 - 55.0)
++    d1, d2, s1, s2 = _cadena_d50(T1, T2, tau1_h, tau2_h, F_pre, F_303)
++    r1, r2, _, _ = _ref_nominal()
++    return {"T1_C": T1, "T2_C": T2, "sigma1": s1, "sigma2": s2,
++            "d50_1_um": GRANULO["D50_nom1_um"] * d1 / r1, "d50_2_um": GRANULO["D50_nom2_um"] * d2 / r2}
++
+ TAU_VALVE_S = 8.0          # constante de tiempo de la válvula/medidor del lazo de dilución (placeholder)
+ 
+ 
+@@ -205,12 +314,23 @@ def simulate_plant_npt3_calibrated(
+     duration_min=300.0,
+     dt_min=0.05,
+     theta_AIT_min=10.0,
++    density_cascade=False,
+ ):
+-    """Simula el tren integrado Área 2000 (B2510) -> Área 3000 (A3110/A3210/B3520) -> Área 6000."""
++    """Simula el tren integrado Área 2000 (B2510) -> Área 3000 (A3110/A3210/B3520) -> Área 6000.
++
++    Nivel de A3110 y A3210 mantenido en LEVEL["level_sp_pct"] (60 %). `density_cascade=False` (defecto): la consigna de nivel queda fija
++    y la densidad solo se mide; True restituye la cascada DIC -> LIC (el maestro de densidad mueve la consigna de nivel).
++    Vinculo vacio -> T -> sobresaturacion -> D50: T = vac_T(P) y el D50 de cada etapa sigue al MSMPR estacionario (granulometria_estacionaria).
++    """
+     n_steps = int(duration_min / dt_min)
+     w_ClO4_pre, T1, T2 = 3714.1, 55.0, 40.0
+     v_T1, v_T2 = 0.0, 0.0
+-    xS1, xS2, d50_2 = 0.130, 0.200, 185.0
++    xS1, xS2 = 0.130, 0.200
++    D50_1N, D50_2N = GRANULO["D50_nom1_um"], GRANULO["D50_nom2_um"]
++    d50_1, d50_2 = D50_1N, D50_2N
++    d50_k1 = d50_k2 = 1.0                     # razones d50_mec / d50_mec_nominal (se actualizan cada update_every_min)
++    sigma1 = sigma2 = float("nan")
++    n_upd = max(int(round(GRANULO["update_every_min"] / dt_min)), 1)
+     C_ClO4_B3520, w_ClO4_ML_ref, F_303_actual = 4.00, 738.0, 27.14
+ 
+     is_osc = tuning_mode == "ZN_oscillatory"
+@@ -234,10 +354,24 @@ def simulate_plant_npt3_calibrated(
+         Kc_T, tauI_T, tauD_T = 0.0052, 9.5, 0.60
+         Kc_D, tauI_D = -650.0, 28.0
+ 
+-    pid_TP1 = CommercialPID(Kc_T, tauI_T, tauD_T, 55.0, -0.932, -0.970, -0.930)
+-    pid_TP2 = CommercialPID(Kc_T, tauI_T, tauD_T, 40.0, -0.962, -0.970, -0.930)
+-    pid_DIR1 = CommercialPID(Kc_D, tauI_D, 0.0, 0.130, 390.23, 250.0, 520.0)
+-    pid_DIR2 = CommercialPID(Kc_D, tauI_D, 0.0, 0.200, 390.23, 250.0, 520.0)
++    pid_TP1 = CommercialPID(Kc_T * VAC["Kc_scale1"], tauI_T, tauD_T, 55.0, VAC["P1_nom"], *VAC["P1_lim"])
++    pid_TP2 = CommercialPID(Kc_T * VAC["Kc_scale2"], tauI_T, tauD_T, 40.0, VAC["P2_nom"], *VAC["P2_lim"])
++    # Cascada DIC (densidad, maestro lento) -> LIC (nivel, esclavo rapido) -> caudal de descarga (SIC 3101/3201).
++    # El maestro de densidad ya no manda el caudal: ajusta la consigna de nivel (retencion) dentro de LEVEL["L_sp_lim"].
++    # La severidad del modo (ZN / Hopf) se conserva escalando su ganancia respecto de la sintonia amortiguada (-650).
++    k_dens = LEVEL["Kc_dens"] * (Kc_D / -650.0)
++    M1_nom, M2_nom = LEVEL["tau1_h"] * LEVEL["F_nom"], LEVEL["tau2_h"] * LEVEL["F_nom"]
++    M1, M2 = M1_nom, M2_nom
++    L1, L2 = 1.0, 1.0
++    pid_DIR1 = CommercialPID(k_dens, tauI_D, 0.0, 0.130, 1.0, *LEVEL["L_sp_lim"])
++    pid_DIR2 = CommercialPID(k_dens, tauI_D, 0.0, 0.200, 1.0, *LEVEL["L_sp_lim"])
++    kc_L1 = -60.0 * M1_nom / LEVEL["tauc_min"]          # [t/h por unidad de L]; negativo: nivel alto -> mas descarga
++    kc_L2 = -60.0 * M2_nom / LEVEL["tauc_min"]
++    ti_L = LEVEL["tauI_factor"] * LEVEL["tauc_min"]
++    pid_LIC1 = CommercialPID(kc_L1, ti_L, 0.0, 1.0, LEVEL["F_nom"], 250.0, 520.0)
++    pid_LIC2 = CommercialPID(kc_L2, ti_L, 0.0, 1.0, LEVEL["F_nom"], 250.0, 520.0)
++    sens_LIC1 = DelayedSensor(0.20, 0.20, dt_min, 1.0)
++    sens_LIC2 = DelayedSensor(0.20, 0.20, dt_min, 1.0)
+     pid_AIC3255 = CommercialPID(-0.48 if is_osc else -0.28, 18.0 if is_osc else 45.0, 0.0, 4.00, 0.22, 0.08, 0.65)
+     pid_FIRC3103 = CommercialPID(Kc=1.25, tau_I=0.45, tau_D=0.0, sp=27.14, u_bias=27.14, u_min=12.0, u_max=42.0)
+ 
+@@ -253,10 +387,10 @@ def simulate_plant_npt3_calibrated(
+         w_ClO4_pre_target = (F_208 * w_ClO4_208 + F_234 * w_ClO4_ML_ref) / F_pre
+         w_ClO4_pre += (dt_min / 8.0) * (w_ClO4_pre_target - w_ClO4_pre)
+ 
+-        R_0 = 0.07176
++        R_0 = R_0_NOM
+         if use_AIT3105:
+             ait3105_pv = sens_AIT3105.read(w_ClO4_pre)
+-            R_eff = R_0 + 5.2e-4 * (ait3105_pv - 3714.1)
++            R_eff = R_0 + K_TRIM_AIT * (ait3105_pv - 3714.1)
+         else:
+             R_eff = R_0
+ 
+@@ -270,12 +404,19 @@ def simulate_plant_npt3_calibrated(
+ 
+         P_vac1 = pid_TP1.step(sens_TIR3101.read(T1), dt_min)
+         P_vac2 = pid_TP2.step(sens_TIR3201.read(T2), dt_min)
+-        F_6 = pid_DIR1.step(sens_DIR3101.read(xS1), dt_min)
+-        F_11 = pid_DIR2.step(sens_DIR3201.read(xS2), dt_min)
++        if density_cascade:
++            pid_LIC1.sp = pid_DIR1.step(sens_DIR3101.read(xS1), dt_min)
++            pid_LIC2.sp = pid_DIR2.step(sens_DIR3201.read(xS2), dt_min)
++        F_6 = pid_LIC1.step(sens_LIC1.read(L1), dt_min)
++        F_11 = pid_LIC2.step(sens_LIC2.read(L2), dt_min)
++        # balances de inventario (t/h -> t/min = /60); vapor y perdidas del A3110 constantes; F_25 = F_21 en A3210
++        M1 += (F_1 - F_VAPOR_A3110 - F_PERDIDAS_A3110 - F_6) * dt_min / 60.0
++        M2 += (F_6 - F_11) * dt_min / 60.0
++        L1, L2 = M1 / M1_nom, M2 / M2_nom
+         alpha_purge = pid_AIC3255.step(sens_AIC3255.read(C_ClO4_B3520), dt_min) if use_AIC3255 else 0.22
+ 
+-        T1_eq = 55.0 + 375.0 * (P_vac1 - (-0.932)) + 0.45 * (T_in_1 - 70.0)
+-        T2_eq = 40.0 + 375.0 * (P_vac2 - (-0.962)) + 0.40 * (T1 - 55.0) + (1.1 if t >= 25.0 else 0.0)
++        T1_eq = vac_T(P_vac1, 1) + 0.45 * (T_in_1 - 70.0)
++        T2_eq = vac_T(P_vac2, 2) + 0.40 * (T1 - 55.0) + (1.1 if t >= 25.0 else 0.0)
+         tau1_T, tau2_T = 4.5, 1.8
+         v_T1 += ((T1_eq - T1 - (tau1_T + tau2_T) * v_T1) / (tau1_T * tau2_T)) * dt_min
+         v_T2 += ((T2_eq - T2 - (tau1_T + tau2_T) * v_T2) / (tau1_T * tau2_T)) * dt_min
+@@ -284,23 +425,37 @@ def simulate_plant_npt3_calibrated(
+ 
+         dil_effect = -0.0004 * (F_303_actual - 27.14)
+         xS1_eq = 0.130 - 4.5e-4 * (F_6 - 390.23) - 0.003 * (T1 - 55.0) + dil_effect + (0.009 if t >= 25.0 else 0.0)
++        xS1_eq += LEVEL["xS_level_gain"] * 0.130 * (L1 - 1.0)
+         xS2_eq = 0.200 + 0.75 * (xS1 - 0.130) - 4.5e-4 * (F_11 - 390.23) - 0.0035 * (T2 - 40.0) + (0.008 if t >= 25.0 else 0.0)
++        xS2_eq += LEVEL["xS_level_gain"] * 0.200 * (L2 - 1.0)
+         xS1 += (dt_min / 9.0) * (xS1_eq - xS1)
+         xS2 += (dt_min / 9.0) * (xS2_eq - xS2)
+ 
+-        sigma_burst = max(55.0 - T1, 0.0) * 2.5 + max(40.0 - T2, 0.0) * 3.0
+-        d50_2_eq = 185.0 + 180.0 * (xS2 - 0.200) - 4.5 * sigma_burst + 0.35 * (390.23 - F_11)
+-        d50_2 += (dt_min / 18.0) * (d50_2_eq - d50_2)
++        # Granulometria: T (fijada por el vacio) -> sobresaturacion -> D50 via MSMPR estacionario, anclado en los D50 de planta.
++        if k % n_upd == 0:
++            try:
++                r1n, r2n, _, _ = _ref_nominal()
++                m1, m2, sigma1, sigma2 = _cadena_d50(T1, T2, M1 / max(F_6, 1.0), M2 / max(F_11, 1.0), F_pre, F_303_actual)
++                if m1 > 0.0 and m2 > 0.0:
++                    d50_k1, d50_k2 = m1 / r1n, m2 / r2n
++            except (ValueError, RuntimeError):
++                pass                                   # sin solucion estacionaria: se mantiene la razon anterior
++        s2 = D50_2N / 185.0                            # reescala las ganancias empiricas (definidas con 185 um) al D50 de planta
++        d50_1_eq = D50_1N * d50_k1
++        d50_2_eq = D50_2N * d50_k2 + s2 * (180.0 * (xS2 - 0.200) + 0.35 * (390.23 - F_11))
++        d50_1 += (dt_min / GRANULO["tau_d50_min"]) * (d50_1_eq - d50_1)
++        d50_2 += (dt_min / GRANULO["tau_d50_min"]) * (d50_2_eq - d50_2)
++        d50_floor = GRANULO["d50_floor_frac"] * D50_2N
+ 
+         C_ClO4_in_eq = 4.00 * (w_ClO4_1 / 3468.0) ** 1.45 * (0.22 / max(alpha_purge, 0.05)) ** 0.50
+         C_ClO4_B3520 += (dt_min / 24.0) * (C_ClO4_in_eq - C_ClO4_B3520)
+ 
+         coprecip_ppm = max(C_ClO4_B3520 - 4.50, 0.0) * 82.0
+-        moisture_17 = 0.050 * (185.0 / max(d50_2, 90.0)) ** 0.65
++        moisture_17 = 0.050 * (D50_2N / max(d50_2, d50_floor)) ** 0.65
+         w_ClO4_lav_3000 = 4070.0 * (C_ClO4_B3520 / 4.00)
+         ppm_ClO4_17 = moisture_17 * w_ClO4_lav_3000 + coprecip_ppm
+ 
+-        rem_eff_6000 = 1.0 - (1.0 - 0.899) * (185.0 / max(d50_2, 90.0)) ** 0.85
++        rem_eff_6000 = 1.0 - (1.0 - 0.899) * (D50_2N / max(d50_2, d50_floor)) ** 0.85
+         w_ClO4_ML_ref_eq = 738.0 * (ppm_ClO4_17 / 203.5)
+         w_ClO4_ML_ref += (dt_min / 30.0) * (w_ClO4_ML_ref_eq - w_ClO4_ML_ref)
+         ppm_superficial_ref = (moisture_17 * w_ClO4_lav_3000) * (1.0 - rem_eff_6000) * (w_ClO4_ML_ref / 738.0) ** 0.4
+@@ -310,9 +465,13 @@ def simulate_plant_npt3_calibrated(
+             "t_min": t, "T1_C": T1, "T2_C": T2, "P_vac1_bar": P_vac1, "P_vac2_bar": P_vac2,
+             "xS1": xS1, "xS2": xS2, "F_6_t_h": F_6, "F_11_t_h": F_11,
+             "F_pre_t_h": F_pre, "w_ClO4_pre_ppm": w_ClO4_pre, "w_ClO4_1_ppm": w_ClO4_1,
++            "dMass_A3110_t_h": F_1 - F_VAPOR_A3110 - F_PERDIDAS_A3110 - F_6,
++            "dMass_A3210_t_h": F_6 - F_11, "L1": L1, "L2": L2, "M1_t": M1, "M2_t": M2,
++            "L1_sp": pid_LIC1.sp, "L2_sp": pid_LIC2.sp,
+             "R_eff": R_eff, "F_303_sp_t_h": F_303_sp, "F_303_actual_t_h": F_303_actual,
+             "C_ClO4_B3520_g_L": C_ClO4_B3520, "alpha_purge_pct": 100.0 * alpha_purge,
+-            "d50_2_um": d50_2, "ppm_ClO4_crudo_17": ppm_ClO4_17,
++            "d50_1_um": d50_1, "d50_2_um": d50_2, "sigma1": sigma1, "sigma2": sigma2,
++            "level1_pct": LEVEL["level_sp_pct"] * L1, "level2_pct": LEVEL["level_sp_pct"] * L2, "ppm_ClO4_crudo_17": ppm_ClO4_17,
+             "ppm_ClO4_final_6000": ppm_ClO4_final_6000,
+         })
+     return pd.DataFrame(hist)
+@@ -330,7 +489,7 @@ def simular_recirculacion_y_magnesio(
+     n_steps = int(duration_min / dt_min)
+     w_ClO4_pre, w_Mg_pre = 3714.1, 8500.0
+     T1, T2 = 55.0, 40.0
+-    P_vac1, P_vac2 = -0.932, -0.962
++    P_vac1, P_vac2 = VAC["P1_nom"], VAC["P2_nom"]
+     d50_2 = 185.0
+     C_ClO4_B3520, C_Mg_B3520 = 3.85, 9.20
+     w_ClO4_ML_ref = 738.0
+@@ -343,10 +502,10 @@ def simular_recirculacion_y_magnesio(
+     s_AIC3255 = DelayedSensor(10.0, 2.0, dt_min, C_ClO4_B3520)
+     s_FIRC3103 = DelayedSensor(0.10, 0.08, dt_min, F_303_actual)
+ 
+-    pid_TIR1 = CommercialPID(0.0055, 9.0, 0.4, 55.0, -0.932, -0.970, -0.930)
+-    pid_TIR2 = CommercialPID(0.0055, 9.0, 0.4, 40.0, -0.962, -0.970, -0.930)
+-    pid_PIR1 = CommercialPID(1.5, 0.3, 0.0, -0.932, -0.932, -0.970, -0.930)
+-    pid_PIR2 = CommercialPID(1.5, 0.3, 0.0, -0.962, -0.962, -0.970, -0.930)
++    pid_TIR1 = CommercialPID(0.0055 * VAC["Kc_scale1"], 9.0, 0.4, 55.0, VAC["P1_nom"], *VAC["P1_lim"])
++    pid_TIR2 = CommercialPID(0.0055 * VAC["Kc_scale2"], 9.0, 0.4, 40.0, VAC["P2_nom"], *VAC["P2_lim"])
++    pid_PIR1 = CommercialPID(1.5, 0.3, 0.0, VAC["P1_nom"], VAC["P1_nom"], *VAC["P1_lim"])
++    pid_PIR2 = CommercialPID(1.5, 0.3, 0.0, VAC["P2_nom"], VAC["P2_nom"], *VAC["P2_lim"])
+     pid_FIRC3103 = CommercialPID(1.25, 0.45, 0.0, 27.14, 27.14, 12.0, 42.0)
+     pid_AIC3255 = CommercialPID(-0.38, 22.0, 0.0, 3.95, 0.25, 0.12, 1.00)
+ 
+@@ -374,11 +533,11 @@ def simular_recirculacion_y_magnesio(
+         w_ClO4_pre += (dt_min / 8.0) * (w_ClO4_pre_eq - w_ClO4_pre)
+         w_Mg_pre += (dt_min / 8.0) * (w_Mg_pre_eq - w_Mg_pre)
+ 
+-        R_0 = 0.07176
++        R_0 = R_0_NOM
+         if use_AIT3105:
+             ait_pv = s_AIT3105.read(w_ClO4_pre)
+             delta_Mg_trim = max((w_Mg_pre - 8500.0) / 8500.0, 0.0)
+-            R_eff = R_0 + 5.2e-4 * (ait_pv - 3714.1) + 0.018 * delta_Mg_trim
++            R_eff = R_0 + K_TRIM_AIT * (ait_pv - 3714.1) + 0.018 * delta_Mg_trim
+         else:
+             R_eff = R_0
+ 
+@@ -395,8 +554,8 @@ def simular_recirculacion_y_magnesio(
+         pid_PIR2.sp = pid_TIR2.step(s_TIR2.read(T2), dt_min)
+         P_vac1 += (dt_min / 0.25) * (pid_PIR1.step(P_vac1, dt_min) - P_vac1)
+         P_vac2 += (dt_min / 0.25) * (pid_PIR2.step(P_vac2, dt_min) - P_vac2)
+-        T1 += (dt_min / 5.5) * (55.0 + 375.0 * (P_vac1 - (-0.932)) - T1)
+-        T2 += (dt_min / 5.5) * (40.0 + 375.0 * (P_vac2 - (-0.962)) + 0.35 * (T1 - 55.0) - T2)
++        T1 += (dt_min / 5.5) * (vac_T(P_vac1, 1) - T1)
++        T2 += (dt_min / 5.5) * (vac_T(P_vac2, 2) + 0.35 * (T1 - 55.0) - T2)
+ 
+         rec_factor = (1.0 / max(alpha_purge, 0.12)) ** 0.28
+         C_ClO4_eq = 3.85 * (w_ClO4_1 / 3468.0) ** 1.35 * rec_factor
+@@ -470,7 +629,7 @@ def simular_planta_agua_dilucion_magnesio(
+     C_ClO4_A3210, C_Mg_A3210 = 3.95, 8.95
+     C_ClO4_B3520, C_Mg_B3520 = 4.00, 9.10
+     T1, T2 = 55.0, 40.0
+-    P_vac1, P_vac2 = -0.932, -0.962
++    P_vac1, P_vac2 = VAC["P1_nom"], VAC["P2_nom"]
+     xS1, xS2 = 0.130, 0.200
+     d50_1, d50_2 = 145.0, 185.0
+     w_ClO4_ML_ref = 738.0
+@@ -487,16 +646,16 @@ def simular_planta_agua_dilucion_magnesio(
+     s_AIC3255 = DelayedSensor(10.0, 2.0, dt_min, C_ClO4_B3520, noise_std=0.025 * ns, seed=17)
+     s_FIRC3103 = DelayedSensor(0.10, 0.08, dt_min, F_303_actual, noise_std=0.15 * ns, seed=18)
+ 
+-    pid_TIR1 = CommercialPID(0.0055, 9.0, 0.4, 55.0, -0.932, -0.970, -0.930, beta=0.5)
+-    pid_TIR2 = CommercialPID(0.0055, 9.0, 0.4, 40.0, -0.962, -0.970, -0.930, beta=0.5)
+-    pid_PIR1 = CommercialPID(1.5, 0.3, 0.0, -0.932, -0.932, -0.970, -0.930)
+-    pid_PIR2 = CommercialPID(1.5, 0.3, 0.0, -0.962, -0.962, -0.970, -0.930)
++    pid_TIR1 = CommercialPID(0.0055 * VAC["Kc_scale1"], 9.0, 0.4, 55.0, VAC["P1_nom"], *VAC["P1_lim"], beta=0.5)
++    pid_TIR2 = CommercialPID(0.0055 * VAC["Kc_scale2"], 9.0, 0.4, 40.0, VAC["P2_nom"], *VAC["P2_lim"], beta=0.5)
++    pid_PIR1 = CommercialPID(1.5, 0.3, 0.0, VAC["P1_nom"], VAC["P1_nom"], *VAC["P1_lim"])
++    pid_PIR2 = CommercialPID(1.5, 0.3, 0.0, VAC["P2_nom"], VAC["P2_nom"], *VAC["P2_lim"])
+     pid_DIR1 = CommercialPID(-650.0, 28.0, 0.0, 0.130, 390.23, 250.0, 520.0)
+     pid_DIR2 = CommercialPID(-650.0, 28.0, 0.0, 0.200, 390.23, 250.0, 520.0)
+     pid_FIRC3103 = CommercialPID(1.30, 0.40, 0.0, 27.14, 27.14, 12.0, 50.0)
+     pid_AIC3255 = CommercialPID(-0.42, 20.0, 0.0, 3.92, 0.25, 0.12, 1.00)
+ 
+-    R_0 = 27.14 / 378.18
++    R_0 = R_0_NOM
+     hist = []
+ 
+     for k in range(n_steps):
+@@ -531,10 +690,10 @@ def simular_planta_agua_dilucion_magnesio(
+         elif strategy == "high_water_manual":
+             R_eff = 0.115
+         elif strategy == "AIT3105_only":
+-            R_eff = R_0 + 5.2e-5 * max(ait_cl_pv - 3714.1, 0.0)
++            R_eff = R_0 + K_TRIM_AIT * max(ait_cl_pv - 3714.1, 0.0)
+         else:
+             d_mg_in = max((ait_mg_pv - 8200.0) / 8200.0, 0.0)
+-            R_eff = R_0 + 5.2e-5 * max(ait_cl_pv - 3714.1, 0.0) + 0.065 * d_mg_in
++            R_eff = R_0 + K_TRIM_AIT * max(ait_cl_pv - 3714.1, 0.0) + 0.065 * d_mg_in
+ 
+         F_303_sp = np.clip(F_pre * R_eff, 12.0, 50.0)
+         pid_FIRC3103.sp = F_303_sp
+@@ -550,8 +709,8 @@ def simular_planta_agua_dilucion_magnesio(
+         P_vac1 += (dt_min / 0.25) * (pid_PIR1.step(P_vac1, dt_min) - P_vac1)
+         P_vac2 += (dt_min / 0.25) * (pid_PIR2.step(P_vac2, dt_min) - P_vac2)
+ 
+-        T1 += (dt_min / 5.5) * (55.0 + 375.0 * (P_vac1 - (-0.932)) + 0.40 * (T_in_1 - 70.0) - 0.025 * (F_303_actual - 27.14) - T1)
+-        T2 += (dt_min / 5.5) * (40.0 + 375.0 * (P_vac2 - (-0.962)) + 0.35 * (T1 - 55.0) - T2)
++        T1 += (dt_min / 5.5) * (vac_T(P_vac1, 1) + 0.40 * (T_in_1 - 70.0) - 0.025 * (F_303_actual - 27.14) - T1)
++        T2 += (dt_min / 5.5) * (vac_T(P_vac2, 2) + 0.35 * (T1 - 55.0) - T2)
+ 
+         F_6 = pid_DIR1.step(s_DIR1.read(xS1), dt_min)
+         F_11 = pid_DIR2.step(s_DIR2.read(xS2), dt_min)
+@@ -759,7 +918,7 @@ def simular_robustez_parametros(
+ 
+     pid_FIRC3103 = CommercialPID(1.30, 0.40, 0.0, 27.14, 27.14, 12.0, 50.0)
+     pid_AIC3255 = CommercialPID(-0.48, 16.0, 0.0, 4.00, 0.25, 0.12, 0.85)
+-    R_0 = 27.14 / 378.18
++    R_0 = R_0_NOM
+ 
+     hist = []
+     for k in range(n_steps):
+@@ -785,7 +944,7 @@ def simular_robustez_parametros(
+         if control_active:
+             d_mg_in = max((ait_mg_pv - 8400.0) / 8400.0, 0.0)
+             aic_trim = 0.015 * max(aic_pv - 4.00, 0.0)
+-            R_eff = R_0 + 5.2e-5 * max(ait_pv - 3714.1, 0.0) + 0.055 * d_mg_in + aic_trim
++            R_eff = R_0 + K_TRIM_AIT * max(ait_pv - 3714.1, 0.0) + 0.055 * d_mg_in + aic_trim
+             F_303_sp = np.clip(F_pre * R_eff, 12.0, 50.0)
+         else:
+             F_303_sp = 27.14
+diff --git a/Cristalizador_cambios_revisar/tests/test_control_integrado.py b/Cristalizador_cambios_revisar/tests/test_control_integrado.py
+index ef91c2a..bed36e0 100644
+--- a/Cristalizador_cambios_revisar/tests/test_control_integrado.py
++++ b/Cristalizador_cambios_revisar/tests/test_control_integrado.py
+@@ -1,56 +1,7 @@
+-# -*- coding: utf-8 -*-
+-"""test_control_integrado
++"""Pruebas del control integrado (lazo abierto/cerrado, ruido OU, IMC, Routh-Hopf y tren NPT-3).
+ 
+-Automatically generated by Colab.
+-
+-Original file is located at
+-    https://colab.research.google.com/drive/1I4Oyo6nVIOGziHGVtL-YKMNSYM9qYZq4
+-
+-El archivo de pruebas unitarias **tests/test_control_integrado.py** automatiza mediante **pytest** la verificación matemática y física de los dos cuadernos integrados (**05_control_PID_Lazo_abiertocerrado.ipynb** y **05_control_pid_perturbaciones.ipynb**), los módulos **msmpr_core** y el tren completo NPT-3 (Áreas 2000–3000–6000).
+-
+-## 1. Cobertura de la Suite de Pruebas Automatizadas
+-
+-La suite valida cinco bloques críticos sustentados en la teoría de control de procesos y en las especificaciones operacionales de la planta:
+-
+-* **Estabilidad en lazo abierto y balances fundamentales:** Comprueba que el punto nominal es estacionario, que el modelo FOPDT ($G(s) = K e^{-\theta s}/(\tau s + 1)$) reproduce el ensayo escalón en lazo abierto, que el nivel sin control actúa como un sistema no autorregulado (integrador puro $dV/dt = \Delta Q_{\text{stock}}$) y que las 12 perturbaciones bidireccionales ($\pm$) cumplen el signo termodinámico esperado.
+-
+-
+-* **Atenuación de perturbaciones y ruido coloreado:** Verifica que el control PI elimina el error estacionario (*offset* nulo) haciendo coincidir el estado dinámico a $24\text{ h}$ con la solución estacionaria, y confirma que bajo ruido de Ornstein-Uhlenbeck se reduce la desviación estándar de temperatura ($\sigma_T$) y volumen ($\sigma_V$), mientras que $\sigma_{\text{ppm}}$ no cambia sin el analizador **AIT 3105**.
+-
+-
+-* **Seguimiento de consignas, IMC ($\varepsilon$/$\lambda$) y arranque sin salto ($\beta$):** Evalúa que la precarga del integrador $I_0 = -K_p s (\beta y_{sp,0} - y_0)$ garantice una inicialización suave (*bumpless transfer*), que $\beta = 0.5$ evite la saturación del actuador reduciendo el sobrepaso, y que el aumento de la constante de filtro $\varepsilon$ ($\lambda$ *tuning*) reduzca monótonamente la ganancia $K_p$ y el esfuerzo de control.
+-
+-
+-* **Criterio de Routh-Hurwitz y Bifurcación de Hopf:** Confirma analíticamente con aproximación de Padé que las ganancias cumplen $\vert{}K_{c,\text{TL}}\vert{} < \vert{}K_{c,\text{ZN}}\vert{} < \vert{}K_{cu,\text{Hopf}}\vert{}$ y que el ajuste de Ziegler-Nichols (razón de decaimiento $1/4$) es más agresivo y oscilatorio que Tyreus-Luyben.
+-
+-
+-* **Control en toda la planta (PWC) y KPI del Área 6000:** Demuestra que el lazo de razón fija **FFIC 3102 -> FIRC 3103** sin **AIT 3105** viola el límite de $40\text{ ppm}$ de $\text{ClO}_4^-$ ante excursiones de composición en SSK, mientras que la integración **AIT 3105 + AIC 3255** mantiene el producto refinado final en $\sim 23.0\text{–}24.5\text{ ppm}$ ($< 40\text{ ppm}$).
+-
+-
+-
+-| Prueba Unitaria | Componente Evaluado | Criterio de Aceptación | Fundamento Teórico |
+-| --- | --- | --- | --- |
+-| `test_open_loop_balances` | Lazo abierto A3110 | Reposo $< 10^{-6}$, error $dV/dt < 3\%$ | Sistemas integradores y curva de reacción
+-
+- |
+-| `test_closed_loop_offset_zero` | Lazos PI ($T$, $V$, razón) | Error relativo final $< 0.1\%$ a $24\text{ h}$ | Acción integral y ganancia estática infinita
+-
+- |
+-| `test_colored_noise_attenuation` | Proceso Ornstein-Uhlenbeck | $\sigma_{T,\text{CL}} < \sigma_{T,\text{OL}}$ y $\sigma_{V,\text{CL}} < \sigma_{V,\text{OL}}$ | Rechazo regulatorio de perturbaciones
+-
+- |
+-| `test_beta_preload_and_imc` | Servo 2-DOF ($\beta$) e IMC ($\varepsilon$) | Arranque sin salto y menor sobrepaso | Inicialización con precarga y filtro IMC
+-
+- |
+-| `test_routh_hopf_and_npt3_kpi` | Routh-Hopf y Áreas 2000–6000 | $\vert{}K_{\text{TL}}\vert{} < \vert{}K_{\text{ZN}}\vert{} < \vert{}K_{\text{Hopf}}\vert{}$, $\text{ppm} < 40$ | Estabilidad de Padé y Plantwide Control
+-
+- |
+-
+-## 2. Código Completo de tests/test_control_integrado.py
+-
+-Guarda este código directamente en la ruta **CristalizadorPT_add/tests/test_control_integrado.py**:
++Ruta: tests/test_control_integrado.py. Criterios en docs/CAMBIOS.md.
+ """
+-
+ import numpy as np
+ import pytest
+ from msmpr_core.params import make_params
+diff --git a/Cristalizador_cambios_revisar/tests/test_revision_vacio_trim_balance.py b/Cristalizador_cambios_revisar/tests/test_revision_vacio_trim_balance.py
+new file mode 100644
+index 0000000..3956f7d
+--- /dev/null
++++ b/Cristalizador_cambios_revisar/tests/test_revision_vacio_trim_balance.py
+@@ -0,0 +1,236 @@
++"""Pruebas de la revisión: vacío-T, holgura del PID, trim de AIT 3105, balance de masa y procedencia de constantes."""
++import inspect
++import math
++import warnings
++
++import numpy as np
++import pytest
++
++from msmpr_core import params, plant
++from msmpr_core.plant import VAC, simulate_plant_npt3_calibrated as sim_npt3
++
++warnings.filterwarnings("ignore")
++
++
++def psat_kpa(T):  # Antoine agua [mmHg, C]
++    return 10 ** (8.07131 - 1730.63 / (233.426 + T)) * 0.133322
++
++
++def test_vacio_nominal_coherente_con_dwsim():
++    assert (VAC["P1_nom"] * 100 + 101.325) == pytest.approx(11.59, abs=0.05)   # A3110, 55 C
++    assert (VAC["P2_nom"] * 100 + 101.325) == pytest.approx(5.43, abs=0.05)    # A3210, 40 C
++
++
++def test_vacio_no_corresponde_a_temperatura_equivocada():
++    # P absoluta nominal de agua pura debe quedar por encima de la Psat a (T - 12 C) y por debajo de la Psat a T
++    for P, T in ((VAC["P1_nom"], 55.0), (VAC["P2_nom"], 40.0)):
++        p_abs = P * 100 + 101.325
++        assert psat_kpa(T - 12) < p_abs < psat_kpa(T)
++
++
++@pytest.mark.parametrize("stage,T", [(1, 55.0), (2, 40.0)])
++def test_ganancia_dT_dP_vs_antoine_con_bpe(stage, T):
++    # la salmuera hierve BPE grados por encima del agua a la misma P: la pendiente de Antoine se evalua en T - BPE
++    K = VAC["K%d" % stage]
++    Tw = T - plant._BPE[stage]
++    dP = (psat_kpa(Tw + 1) - psat_kpa(Tw - 1)) / 2 / 100.0
++    assert K == pytest.approx(1.0 / dP, rel=0.03)
++    assert K > {1: 133.0, 2: 255.0}[stage]          # mayor que la estimacion sin BPE
++
++
++@pytest.mark.parametrize("n", ["P1", "P2"])
++def test_pid_vacio_tiene_holgura_en_ambos_sentidos(n):
++    lo, hi = VAC[f"{n}_lim"]
++    P = VAC[f"{n}_nom"]
++    assert hi - lo >= 0.03
++    assert P - lo >= 0.01 and hi - P >= 0.01
++    # holgura equivalente en temperatura: al menos +-2 C
++    K = VAC["K" + n[1]]
++    assert K * (hi - P) >= 2.0 and K * (P - lo) >= 2.0
++
++
++def test_ganancia_de_lazo_conservada():
++    assert VAC["K1"] * VAC["Kc_scale1"] == pytest.approx(375.0)
++    assert VAC["K2"] * VAC["Kc_scale2"] == pytest.approx(375.0)
++
++
++def test_sin_constantes_antiguas_en_plant():
++    src = inspect.getsource(plant)
++    for viejo in ("-0.932", "-0.962", "375.0 * (P_vac", "5.2e-4"):
++        assert viejo not in src.replace('"Kc_scale1": 375.0 / 133.0, "Kc_scale2": 375.0 / 255.0', ""), viejo
++
++
++def test_trim_ait_no_satura_la_valvula_en_regimen():
++    # Antes (K=5.2e-4) la consigna quedaba en el tope ~73 % del tiempo. Con el escenario combinado (+8 % de flujo y +650 ppm)
++    # un tope transitorio es esperable; el estado final y la fraccion de tiempo saturado deben ser bajos.
++    d = sim_npt3(use_AIT3105=True, use_AIC3255=True)
++    sat = (d.F_303_sp_t_h >= 42.0 - 0.01).mean()
++    assert sat < 0.10
++    assert d.F_303_sp_t_h.iloc[-1] < 42.0 - 1.0
++
++
++def test_trim_ait_dimensionado_para_pulso():
++    # +650 ppm en SSK -> exceso en la alimentacion previa; la consigna debe quedar dentro de [12, 42] sin recorte
++    dw_pre = 650.0 * 356.85 / plant.F_PRE_NOM
++    F_sp = plant.F_PRE_NOM * (plant.R_0_NOM + plant.K_TRIM_AIT * dw_pre)
++    assert 12.0 < F_sp < 42.0
++
++
++def test_razon_dilucion_documentada():
++    assert plant.R_0_NOM == pytest.approx(0.07176, abs=1e-4)
++    p = params.make_params("literatura")
++    d_total = p["feed_dilution_fraction"]
++    # razon dilucion/alimentacion equivalente a la fraccion sobre el total: d/(1-d); debe ser distinta de R_0 (otra base)
++    assert d_total / (1 - d_total) != pytest.approx(plant.R_0_NOM, rel=0.05)
++
++
++def test_balance_masa_nominal_cierra():
++    d = sim_npt3(use_AIT3105=False, use_AIC3255=False, duration_min=5.0)
++    assert abs(d["dMass_A3110_t_h"].iloc[0]) < 0.05           # F1 - vapor - perdidas - F6 = 0 en el nominal
++
++
++@pytest.fixture(scope="module")
++def sims():
++    return {m: sim_npt3(tuning_mode=m) for m in ("TL_damped", "ZN_oscillatory", "Hopf_limit_cycle")}
++
++
++@pytest.fixture(scope="module")
++def sim_cascada():
++    return sim_npt3(density_cascade=True)
++
++
++def test_nivel_inicia_en_reposo_y_cierra_balance_nominal():
++    d = sim_npt3(use_AIT3105=False, use_AIC3255=False, duration_min=3.0)
++    for c in ("dMass_A3110_t_h", "dMass_A3210_t_h"):
++        assert abs(d[c].iloc[0]) < 0.05
++    assert d.L1.iloc[0] == pytest.approx(1.0) and d.L2.iloc[0] == pytest.approx(1.0)
++
++
++def test_inventario_coherente_con_los_flujos():
++    # M(t) debe ser la integral de dMass: el nivel es un balance de masa real, no un valor impuesto
++    d = sim_npt3()
++    dt_h = (d.t_min.iloc[1] - d.t_min.iloc[0]) / 60.0
++    for M, dm in (("M1_t", "dMass_A3110_t_h"), ("M2_t", "dMass_A3210_t_h")):
++        est = d[M].iloc[0] + np.cumsum(d[dm].values) * dt_h
++        assert np.max(np.abs(est - d[M].values)) < 0.02 * d[M].iloc[0]
++
++
++@pytest.mark.parametrize("modo", ["TL_damped", "ZN_oscillatory", "Hopf_limit_cycle"])
++def test_nivel_acotado_ante_perturbaciones(sims, modo):
++    d = sims[modo]
++    assert d.L1.between(0.85, 1.15).all() and d.L2.between(0.85, 1.15).all()
++    assert d.F_6_t_h.between(250.0, 520.0).all() and d.F_11_t_h.between(250.0, 520.0).all()
++    assert abs(d.dMass_A3110_t_h.iloc[-1]) < 5.0      # sin deriva sostenida al final (t/h)
++
++
++def test_perturbacion_de_flujo_mueve_la_descarga_y_el_nivel():
++    # +8 % de F_208 (t = 25-140 min) debe aumentar F_6 y el nivel; sin lazo de nivel no habia reaccion de F_6 por balance
++    d = sim_npt3()
++    pico = d[(d.t_min > 25) & (d.t_min < 140)]
++    assert pico.F_6_t_h.max() > 390.23 + 5.0
++    assert pico.L1.max() > 1.001                 # el nivel se desvia poco (lazo rapido), pero se mueve
++
++
++def test_nivel_consigna_fija_en_60_por_ciento(sims):
++    d = sims["TL_damped"]
++    assert (d.L1_sp == 1.0).all() and (d.L2_sp == 1.0).all()
++    assert plant.LEVEL["level_sp_pct"] == 60.0
++    assert d.level1_pct.iloc[0] == pytest.approx(60.0) and d.level2_pct.iloc[0] == pytest.approx(60.0)
++    for c in ("level1_pct", "level2_pct"):
++        assert d[c].between(60.0 * 0.95, 60.0 * 1.05).all()      # +-5 % del SP ante las perturbaciones
++
++
++def test_cascada_de_densidad_opcional_mueve_la_consigna(sim_cascada):
++    d = sim_cascada
++    assert d.L1_sp.min() >= 0.90 - 1e-9 and d.L1_sp.max() <= 1.10 + 1e-9
++    assert d.L1_sp.max() - d.L1_sp.min() > 1e-3
++
++
++def test_ppm_con_nivel_sigue_cumpliendo_criterios(sims):
++    assert sims["TL_damped"].ppm_ClO4_final_6000.max() < 40.0
++    sin = sim_npt3(use_AIT3105=False, use_AIC3255=False)
++    assert sin.ppm_ClO4_final_6000.max() > 40.0
++
++
++def test_nivel_placeholders_etiquetados():
++    for k in ("tauc_min", "xS_level_gain", "L_sp_lim", "Kc_dens"):
++        assert k in plant.LEVEL
++
++
++def test_coeficientes_empiricos_etiquetados():
++    ph = params.placeholders()
++    assert any(k.startswith("empirico.") for k in ph)
++    for k in params.EMPIRICAL_COEFFS:
++        assert f"empirico.{k}" in params.PROVENANCE
++
++
++def test_referencia_temperatura_arrhenius_usa_parametro():
++    from msmpr_core import dpbe
++    p = params.make_params("literatura", Eg_J_mol=40000.0)
++    p2 = dict(p, reference_temperature_C=50.0, Cstar_ref_kg_m3=p["Cstar_ref_kg_m3"])
++    # a T = T_ref el factor de Arrhenius vale 1 -> G = kG sigma^g
++    C = dpbe.cstar(50.0, p2) * 1.05
++    _, G, _ = dpbe.kinetics(C, 50.0, p2)
++    assert G == pytest.approx(p2["kG_m_s"] * 0.05 ** p2["g"], rel=1e-9)
++
++
++# ---------------------------------------------------------------- vinculo vacio -> T -> granulometria
++def test_vac_T_nominal_y_monotonia():
++    assert plant.vac_T(VAC["P1_nom"], 1) == pytest.approx(55.0, abs=1e-6)
++    assert plant.vac_T(VAC["P2_nom"], 2) == pytest.approx(40.0, abs=1e-6)
++    P = np.linspace(-0.97, -0.85, 25)
++    for st in (1, 2):
++        T = np.array([plant.vac_T(p, st) for p in P])
++        assert (np.diff(T) > 0).all()                 # mas vacio (P menor) -> T menor
++
++
++@pytest.mark.parametrize("stage,T", [(1, 55.0), (2, 40.0), (1, 50.0), (2, 36.0)])
++def test_vac_P_es_inversa_de_vac_T(stage, T):
++    assert plant.vac_T(plant.vac_P(T, stage), stage) == pytest.approx(T, abs=1e-6)
++
++
++def test_granulometria_nominal_igual_a_d50_de_planta():
++    g = plant.granulometria_estacionaria()
++    assert g["d50_1_um"] == pytest.approx(plant.GRANULO["D50_nom1_um"], rel=1e-9)
++    assert g["d50_2_um"] == pytest.approx(plant.GRANULO["D50_nom2_um"], rel=1e-9)
++    assert g["T1_C"] == pytest.approx(55.0, abs=1e-6) and g["T2_C"] == pytest.approx(40.0, abs=1e-6)
++
++
++def test_mas_vacio_baja_T_y_cambia_d50_en_el_sentido_del_modelo():
++    # Regresion del vinculo (cinetica placeholder): mas vacio -> T menor -> mayor sobresaturacion absoluta de C -> d50 mas grande
++    nom = plant.granulometria_estacionaria()
++    mas = plant.granulometria_estacionaria(VAC["P1_nom"] - 0.01, VAC["P2_nom"] - 0.01)
++    menos = plant.granulometria_estacionaria(VAC["P1_nom"] + 0.01, VAC["P2_nom"] + 0.01)
++    assert mas["T1_C"] < nom["T1_C"] < menos["T1_C"] and mas["T2_C"] < nom["T2_C"] < menos["T2_C"]
++    assert mas["d50_2_um"] > nom["d50_2_um"] > menos["d50_2_um"]
++    assert mas["d50_1_um"] > nom["d50_1_um"] > menos["d50_1_um"]
++
++
++def test_sensibilidad_granulometrica_acotada():
++    # con cinetica placeholder la respuesta debe ser finita y moderada (+-0.02 bar < 10 % de d50)
++    for dP in (-0.02, 0.02):
++        g = plant.granulometria_estacionaria(VAC["P1_nom"] + dP, VAC["P2_nom"] + dP)
++        assert abs(g["d50_1_um"] / plant.GRANULO["D50_nom1_um"] - 1) < 0.10
++        assert abs(g["d50_2_um"] / plant.GRANULO["D50_nom2_um"] - 1) < 0.10
++
++
++def test_mas_agua_de_dilucion_reduce_sobresaturacion():
++    base = plant.granulometria_estacionaria()
++    dil = plant.granulometria_estacionaria(F_303=42.0)
++    assert dil["sigma1"] < base["sigma1"]
++
++
++def test_dinamico_arranca_en_d50_de_planta_y_columnas_nuevas():
++    d = sim_npt3()
++    assert d.d50_1_um.iloc[0] == pytest.approx(plant.GRANULO["D50_nom1_um"])
++    assert d.d50_2_um.iloc[0] == pytest.approx(plant.GRANULO["D50_nom2_um"])
++    for c in ("sigma1", "sigma2", "level1_pct", "level2_pct"):
++        assert c in d.columns
++    assert d.d50_2_um.between(0.7 * 514, 1.15 * 514).all() and d.d50_1_um.between(0.7 * 541, 1.15 * 541).all()
++
++
++def test_dinamico_T_sigue_a_la_presion_via_vac_T():
++    # en regimen: T de la simulacion ~ vac_T(P) + acoples (0.45*(Tin-70), 0.40*(T1-55)); tolerancia de acoples/dinamica
++    d = sim_npt3(duration_min=300.0)
++    ult = d.iloc[-1]
++    assert abs(ult.T1_C - (plant.vac_T(ult.P_vac1_bar, 1) + 0.45 * 3.5)) < 1.0

@@ -27,6 +27,7 @@ def kinetics(C: float, T_C: float, p: dict):
     """Devuelve (sigma, G [m/s], B [#/(m3 s)]). sigma = C/C* - 1 (0 si subsaturado)."""
     sigma = max(C / cstar(T_C, p) - 1.0, 0.0)
     arr = math.exp(-p.get("Eg_J_mol", 0.0) / R_GAS * (1.0 / (T_C + 273.15) - 1.0 / T_REF_K))
+    enable_dissolution=True
     G = p["kG_m_s"] * arr * sigma ** p["g"]
     B = p["kB_m3_s_inv"] * sigma ** p["b"]
     return sigma, G, B

@@ -91,9 +91,18 @@ class SampledSensor:
 
 
 class DelayedSensor:
-    """Medición continua con tiempo muerto compatible con PlantController (2 args) y modelo NPT-3 (4-5 args)."""
+    """Medición continua con tiempo muerto compatible con PlantController (2 args) y modelo NPT-3 (4 a 7 args)."""
 
-    def __init__(self, delay_s: float, initial: float = 0.0, dt_min: float | None = None, initial_val: float | None = None, resolution: float = 0.0):
+    def __init__(
+        self,
+        delay_s: float,
+        initial: float = 0.0,
+        dt_min: float | None = None,
+        initial_val: float | None = None,
+        resolution: float = 0.0,
+        noise_std: float = 0.0,
+        seed: int = 42,
+    ):
         if dt_min is None and initial_val is None:
             # Modo original de PlantController: DelayedSensor(delay_s, initial)
             self.delay = float(delay_s)
@@ -101,15 +110,17 @@ class DelayedSensor:
             self._queue = deque()
             self._npt3_mode = False
         else:
-            # Modo discreto para modelo NPT-3: DelayedSensor(theta_min, tau_m_min, dt_min, initial_val, resolution)
+            # Modo discreto para modelo NPT-3: DelayedSensor(theta_min, tau_m_min, dt_min, initial_val, resolution, noise_std, seed)
             theta_min = float(delay_s)
             tau_m_min = float(initial)
             self.delay_steps = max(int(round(theta_min / float(dt_min))), 1)
             self.buffer = deque([initial_val] * self.delay_steps, maxlen=self.delay_steps)
             self.tau_m = tau_m_min
             self.dt = float(dt_min)
-            self.filtered_val = initial_val
-            self.res = resolution
+            self.filtered_val = float(initial_val)
+            self.res = float(resolution)
+            self.noise_std = float(noise_std)
+            self.rng = np.random.default_rng(seed)
             self._npt3_mode = True
 
     def read(self, t_or_val, true_value=None):
@@ -122,14 +133,16 @@ class DelayedSensor:
             return self.value
         else:
             # Llamado por modelo NPT-3: sensor.read(true_val)
-            val = t_or_val
+            val = float(t_or_val)
+            if self.noise_std > 0.0:
+                val += float(self.rng.normal(0.0, self.noise_std))
             self.buffer.append(val)
             delayed = self.buffer[0]
-            if self.tau_m > 0:
+            if self.tau_m > 0.0:
                 self.filtered_val += (self.dt / self.tau_m) * (delayed - self.filtered_val)
             else:
                 self.filtered_val = delayed
-            if self.res > 0:
+            if self.res > 0.0:
                 return round(self.filtered_val / self.res) * self.res
             return self.filtered_val
 
@@ -423,7 +436,7 @@ _trapz = getattr(np, "trapezoid", getattr(np, "trapz", None))
 
 
 def iae(t_h, e):
-    """Integral del error absoluto (IAE) en [unid * h], compatible con NumPy 1.x y 2.x."""
+    """Integral del error absoluto (IAE) en [unid * h]."""
     return float(_trapz(np.abs(e), t_h))
 
 
@@ -478,19 +491,25 @@ def routh_hopf_analysis(Kp, tau_p, theta, tau_I):
 
 
 class CommercialPID:
-    """PID industrial con derivada sobre PV, filtro derivativo y anti-windup."""
+    """PID industrial 2-DOF con derivada sobre PV, filtro derivativo, anti-windup y trazabilidad de P e I."""
+
     def __init__(self, Kc, tau_I, tau_D, sp, u_bias, u_min, u_max, alpha=0.1, beta=1.0):
-        self.Kc, self.tau_I, self.tau_D = Kc, tau_I, tau_D
-        self.sp, self.u_bias = sp, u_bias
-        self.u_min, self.u_max = u_min, u_max
-        self.alpha, self.beta = alpha, beta
-        self.integral = -self.Kc * (self.beta * sp - sp)
+        self.Kc, self.tau_I, self.tau_D = float(Kc), float(tau_I), float(tau_D)
+        self.sp, self.u_bias = float(sp), float(u_bias)
+        self.u_min, self.u_max = float(u_min), float(u_max)
+        self.alpha, self.beta = float(alpha), float(beta)
+        self.integral = -self.Kc * (self.beta * self.sp - self.sp)
+        self.I = self.integral
         self.prev_pv = None
         self.d_filt = 0.0
+        self.last_error = 0.0
+        self.last_P = 0.0
 
     def step(self, pv, dt):
         error = self.sp - pv
+        self.last_error = error
         P = self.Kc * (self.beta * self.sp - pv)
+        self.last_P = P
         if self.prev_pv is None or self.tau_D <= 0 or dt <= 0:
             D = 0.0
         else:
@@ -502,5 +521,6 @@ class CommercialPID:
         u_unsat = self.u_bias + P + tentative_I + D
         if self.u_min <= u_unsat <= self.u_max:
             self.integral = tentative_I
+            self.I = tentative_I
         self.prev_pv = pv
         return float(np.clip(u_unsat, self.u_min, self.u_max))

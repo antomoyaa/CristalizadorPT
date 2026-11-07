@@ -97,3 +97,14 @@ def test_calibration_profile_plant_converges_and_closes():
     pl = Plant(P.make_params("calibracion"))
     x, u, d = pl.steady_state()
     assert abs(pl.metrics(x, u, d)["Y_cierre"]) < 1e-8
+
+def test_planta_sqm_profile_has_mg_and_meets_recovery_criterion():
+    """Verifica que el perfil 'planta_sqm' incluya Mg=32.1115 g/L y cumpla 0.30 <= Y <= 0.70 (AGENTS.md)."""
+    p_sqm = P.make_params("planta_sqm")
+    assert p_sqm["feed_stock_kg_m3"]["Mg"] == pytest.approx(32.1115, rel=1e-4)
+    assert "Mg" in P.PROVENANCE["feed_stock_kg_m3"]
+    pl = Plant(p_sqm)
+    x, u, d = pl.steady_state(alpha=0.25)
+    m = pl.metrics(x, u, d)
+    assert 0.30 <= m["Y_sol"] <= 0.70
+    assert abs(m["Y_cierre"]) < 1e-8

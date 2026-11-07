@@ -29,9 +29,12 @@ BASE = {
     "dilution_water_temperature_C": 20.0,    # agua de proceso (P&ID: process water 20 degC)
     "tank_volume_m3": 150.0,                 # tanque de licor madre (B3520); placeholder
     # --- Alimentación
-    "feed_stock_kg_m3": {"KNO3": 220.0,      # placeholder (ver nota: SSK-d da ~525 kg/m3 a 70 degC)
-                         "ClO4": 5.56379,    # interno: informe §2, base iónica SSK-d (antes 3.8e-3: base distinta)
-                         "OTHER": 386.5},    # interno: demás sales disueltas (1-0.3994-0.3460)*1518 kg/m3, SSK-d; trazador inerte
+    "feed_stock_kg_m3": {
+        "KNO3": 220.0,       # placeholder (ver nota: SSK-d da ~525 kg/m3 a 70 degC)
+        "ClO4": 5.56379,     # interno: informe §2, base iónica SSK-d (antes 3.8e-3: base distinta)
+        "Mg": 32.1115,       # interno: Evaporative_MSMPR_DPBE-2.ipynb feed_composition['Mg_g_L'] = 32.1114745 g/L
+        "OTHER": 386.5,      # interno: demás sales disueltas (1-0.3994-0.3460)*1518 kg/m3, SSK-d; trazador inerte
+    },
     # --- Termodinámica
     "reference_temperature_C": 40.0,
     "Cstar_ref_kg_m3": 180.0,                # placeholder: solubilidad en salmuera NO medida
@@ -69,13 +72,13 @@ PROVENANCE.update({
     "volume_m3": "interno", "feed_flow_m3_s": "interno", "feed_temperature_C": "interno",
     "crystallizer_temperature_C": "interno", "tank_volume_m3": "placeholder",
     "dilution_water_temperature_C": "interno",
-    "feed_stock_kg_m3": "placeholder (KNO3) / interno (ClO4)",
+    "feed_stock_kg_m3": "placeholder (KNO3) / interno (ClO4, Mg, OTHER)",
     "solubility_slope_K_inv": "respaldado", "deltaH_crystallization_J_kg": "interno",
     "latent_heat_J_kg": "respaldado", "solution_cp_J_kg_K": "interno",
     "rho_liquid_kg_m3": "interno", "rho_water_kg_m3": "respaldado", "cp_water_J_kg_K": "respaldado",
     "water_mass_fraction_liquor": "interno", "rho_crystal_kg_m3": "respaldado", "kv": "respaldado",
     "density_k_KNO3": "respaldado", "density_k_other": "placeholder",
-    "spec_ClO4_ppm_max": "interno", "Mg": 32.1115
+    "spec_ClO4_ppm_max": "interno",
 })
 
 
@@ -97,24 +100,31 @@ BASE_CALIBRACION = {
     "rho_crystal_kg_m3": 2100.0, "kv": math.pi / 6.0,
     "Kd": 0.01, "rho_liquid_kg_m3": 1040.0,
 }
+
+# ---------------------------------------------------------------------------------------------
+# Perfil 'planta_sqm': datos reconciliados de la corriente industrial 334 SSK-d (informe_parametros.md §2)
+# y solubilidad de datos_cristalizador.xlsx (hoja 'solubilidad'). Permite simular Plant con
+# recuperación industrial realista (Y ~ 50-65 %, cumpliendo AGENTS.md: Y entre 0.3 y 0.7).
+# ---------------------------------------------------------------------------------------------
+BASE_PLANTA_SQM = {
+    "feed_stock_kg_m3": {
+        "KNO3": 525.228,      # interno: corriente 334 SSK-d (0.3460 * 1518 kg/m3 a 70 degC, informe_parametros.md §2)
+        "ClO4": 5.56379,      # interno: base iónica SSK-d (g/L = kg/m3)
+        "Mg": 32.1115,        # interno: Evaporative_MSMPR_DPBE-2.ipynb feed_composition['Mg_g_L'] = 32.1114745 g/L
+        "OTHER": 386.5,       # interno: demás sales disueltas (1-0.3994-0.3460)*1518 kg/m3, SSK-d
+    },
+    "feed_temperature_C": 70.0,      # interno: corriente 334 SSK-d a 70 degC (informe_parametros.md §2)
+    "Cstar_ref_kg_m3": 177.940756,   # interno: datos_cristalizador.xlsx hoja 'solubilidad' a 40 degC
+    "solubility_slope_K_inv": 0.010, # interno: pendiente térmica de calibración
+    "rho_liquid_kg_m3": 1518.0,      # interno: densidad líquida corriente 334 SSK-d (informe_parametros.md §2)
+    "solution_cp_J_kg_K": 2248.0,    # interno: Cp líquido corriente 334 SSK-d (informe_parametros.md §2)
+}
+
 # claves que condicionan los parámetros calibrados (si difieren, kG/kB/Kd no son transferibles)
 BASIS_KEYS = ["reference_temperature_C", "Cstar_ref_kg_m3", "solubility_slope_K_inv",
               "rho_crystal_kg_m3", "kv", "rho_liquid_kg_m3"]
 CALIBRATED_KEYS = ["kG_m_s", "kB_m3_s_inv", "Kd", "g", "b"]
 
-# Agregar después de BASE_CALIBRACION en msmpr_core/params.py:
-BASE_PLANTA_SQM = {
-    "feed_stock_kg_m3": {
-        "KNO3": 525.2,       # interno: corriente 334 SSK-d (0.3460 * 1518 kg/m3 a 70 °C, informe_parametros.md §2)
-        "ClO4": 5.56379,     # interno: base iónica SSK-d (g/L = kg/m3)
-        "Mg": 32.1114745,    # interno: feed_composition['Mg_g_L'] en Evaporative_MSMPR_DPBE-2.ipynb
-        "OTHER": 354.39,     # resto de sales (NaNO3 + NaCl + SO4 + Ca)
-    },
-    "Cstar_ref_kg_m3": 177.940756,  # datos_cristalizador.xlsx hoja 'solubilidad' a 40 °C
-    "solubility_slope_K_inv": 0.010,
-    "rho_liquid_kg_m3": 1518.0,
-    "solution_cp_J_kg_K": 2248.0,
-}
 
 def _deep_update(p: dict, src: dict) -> None:
     for k, v in src.items():
@@ -130,6 +140,8 @@ def make_params(profile: str = "literatura", **overrides) -> dict:
     profile='literatura'  : valores respaldados con fuente donde existen (Perry, IAPWS...). Por defecto.
     profile='calibracion' : base del notebook de Pareto/calibración (ver BASE_CALIBRACION). Con ella, el
                             término de humedad de torta se anula porque su Kd ya absorbe todo el ClO4 del producto seco.
+    profile='planta_sqm'  : alimentación industrial corriente 334 SSK-d (informe_parametros.md §2, KNO3 = 525.23 kg/m3,
+                            Mg = 32.1115 kg/m3) con recuperación estacionaria Y ~ 64.3 % (cumple 0.3 <= Y <= 0.7).
     """
     if profile not in ("literatura", "calibracion", "planta_sqm"):
         raise ValueError("profile debe ser 'literatura', 'calibracion' o 'planta_sqm'")
@@ -142,11 +154,6 @@ def make_params(profile: str = "literatura", **overrides) -> dict:
         p["cake_moisture_fraction"] = 0.0
     elif profile == "planta_sqm":
         _deep_update(p, BASE_PLANTA_SQM)
-    if profile == "calibracion":
-        src = {k: v for k, v in BASE_CALIBRACION.items() if k != "residence_time"}
-        _deep_update(p, src)
-        p["feed_flow_m3_s"] = BASE_CALIBRACION["volume_m3"] / BASE_CALIBRACION["residence_time"]
-        p["cake_moisture_fraction"] = 0.0
     for k, v in overrides.items():
         if k not in p:
             raise KeyError(f"Parámetro desconocido: {k}")
@@ -167,7 +174,7 @@ def diff_bases():
             continue
         va, vb = a[k], b[k]
         if isinstance(va, dict):
-            for kk in va:
+            for kk in BASE_CALIBRACION[k]:
                 if va[kk] != vb[kk]:
                     rows.append({"parametro": f"{k}.{kk}", "literatura": va[kk], "calibracion": vb[kk],
                                  "condiciona_calibracion": False})
@@ -193,12 +200,7 @@ def load_base_from_notebook(path: str) -> dict:
 
 
 def apply_calibration(p: dict, calibration, equipment: str = "", force: bool = False) -> dict:
-    """Inserta kG, kB, Kd (y g, b si vienen) calibrados en `p`, comprobando que la base coincide.
-
-    calibration: dict {'kG_m_s':..., 'kB_m3_s_inv':..., 'Kd':...}  o  DataFrame con columnas
-    'parameter' y 'optimized' (la tabla que imprime calibracion_do_crystal.ipynb).
-    Si alguna clave de BASIS_KEYS de `p` difiere de la base con que se calibró, lanza ValueError (force=True la ignora).
-    """
+    """Inserta kG, kB, Kd (y g, b si vienen) calibrados en `p`, comprobando que la base coincide."""
     if hasattr(calibration, "columns"):
         calibration = dict(zip(calibration["parameter"], calibration["optimized"].astype(float)))
     bad = [k for k in BASIS_KEYS if p[k] != BASE_CALIBRACION[k]]

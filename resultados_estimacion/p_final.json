@@ -1,0 +1,21 @@
+{
+  "volume_m3": 660.0,
+  "feed_dilution_fraction": 0.05,
+  "crystallizer_temperature_C": 40.0,
+  "residence_time": 8460.63454759107,
+  "feed_stock_kg_m3": {
+    "KNO3": 220.0,
+    "ClO4": 0.003799262673
+  },
+  "reference_temperature_C": 40.0,
+  "Cstar_ref_kg_m3": 179.66689276165488,
+  "solubility_slope_K_inv": 0.00994382982855975,
+  "kG_m_s": 3.946246178572084e-07,
+  "g": 1.2067298060164133,
+  "kB_m3_s_inv": 28078640311.841732,
+  "b": 2.3322244357996857,
+  "rho_crystal_kg_m3": 2100.0,
+  "kv": 0.5235987755982988,
+  "Kd": 0.010057048217260119,
+  "rho_liquid_kg_m3": 1040.0
+}

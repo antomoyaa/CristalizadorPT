@@ -41,6 +41,9 @@ VAC = {
     "P1_lim": (-0.920, -0.870), "P2_lim": (-0.975, -0.940),                      # (min, max) supuestos de diseño
     "Kc_scale1": 375.0 / 133.0, "Kc_scale2": 375.0 / 255.0,                      # conserva la ganancia de lazo con que se sintonizó
 }
+# Ganancia ultima y periodo de los lazos de temperatura (TIR -> PIRCAL), identificados SOBRE ESTA SIMULACION con accion P pura y valvula
+# sin saturar (identificar_Kcu). Kc en [bar/C] antes del reescalado por etapa. Reemplazan a los de la tabla FOPDT (Kp=375, tau_p=5.5, theta=1).
+KCU_SIM = {"Kcu_bar_C": 0.012407, "Pu_min": 9.70}
 K_TRIM_AIT = 5.2e-5          # [1/ppm] razón extra de dilución por ppm de ClO4 sobre 3714.1 (placeholder; decisión económica)
 F303_NOM, F_PRE_NOM = 27.14, 378.18
 R_0_NOM = F303_NOM / F_PRE_NOM          # 0.07176: razón dilución / alimentación previa (no es feed_dilution_fraction)
@@ -315,6 +318,10 @@ def simulate_plant_npt3_calibrated(
     dt_min=0.05,
     theta_AIT_min=10.0,
     density_cascade=False,
+    Kc_T_override=None,
+    tauI_T_override=None,
+    tauD_T_override=None,
+    vac_limits_override=None,
 ):
     """Simula el tren integrado Área 2000 (B2510) -> Área 3000 (A3110/A3210/B3520) -> Área 6000.
 
@@ -344,18 +351,25 @@ def simulate_plant_npt3_calibrated(
     sens_AIC3255 = DelayedSensor(10.0, 2.0, dt_min, C_ClO4_B3520)
     sens_FIRC3103 = DelayedSensor(0.10, 0.08, dt_min, F_303_actual)
 
+    # Sintonias de T: Hopf = Kcu (limite de estabilidad); Z-N PI = 0.45 Kcu, tauI = Pu/1.2 (decaimiento ~1/4 en la simulacion);
+    # T-L amortiguada = valores historicos (Kc = 0.42 Kcu, con accion derivativa).
     if is_hopf:
-        Kc_T, tauI_T, tauD_T = 0.0152, 3.2, 0.0
+        Kc_T, tauI_T, tauD_T = KCU_SIM["Kcu_bar_C"], KCU_SIM["Pu_min"] / 1.2, 0.0
         Kc_D, tauI_D = -2100.0, 8.5
     elif is_osc:
-        Kc_T, tauI_T, tauD_T = 0.0095, 3.8, 0.25
+        Kc_T, tauI_T, tauD_T = 0.45 * KCU_SIM["Kcu_bar_C"], KCU_SIM["Pu_min"] / 1.2, 0.0
         Kc_D, tauI_D = -1350.0, 11.0
     else:
         Kc_T, tauI_T, tauD_T = 0.0052, 9.5, 0.60
         Kc_D, tauI_D = -650.0, 28.0
 
-    pid_TP1 = CommercialPID(Kc_T * VAC["Kc_scale1"], tauI_T, tauD_T, 55.0, VAC["P1_nom"], *VAC["P1_lim"])
-    pid_TP2 = CommercialPID(Kc_T * VAC["Kc_scale2"], tauI_T, tauD_T, 40.0, VAC["P2_nom"], *VAC["P2_lim"])
+    # Sobrescritura de la sintonia de T (identificacion de Kcu, analisis de sensibilidad). Kc_T en [bar/C] antes del reescalado por etapa.
+    Kc_T = Kc_T if Kc_T_override is None else Kc_T_override
+    tauI_T = tauI_T if tauI_T_override is None else tauI_T_override
+    tauD_T = tauD_T if tauD_T_override is None else tauD_T_override
+    lim1, lim2 = (VAC["P1_lim"], VAC["P2_lim"]) if vac_limits_override is None else (vac_limits_override, vac_limits_override)
+    pid_TP1 = CommercialPID(Kc_T * VAC["Kc_scale1"], tauI_T, tauD_T, 55.0, VAC["P1_nom"], *lim1)
+    pid_TP2 = CommercialPID(Kc_T * VAC["Kc_scale2"], tauI_T, tauD_T, 40.0, VAC["P2_nom"], *lim2)
     # Cascada DIC (densidad, maestro lento) -> LIC (nivel, esclavo rapido) -> caudal de descarga (SIC 3101/3201).
     # El maestro de densidad ya no manda el caudal: ajusta la consigna de nivel (retencion) dentro de LEVEL["L_sp_lim"].
     # La severidad del modo (ZN / Hopf) se conserva escalando su ganancia respecto de la sintonia amortiguada (-650).
@@ -989,3 +1003,58 @@ def simular_robustez_parametros(
             "alpha_purge_pct": 100.0 * alpha_purge, "ppm_ClO4_final_6000": ppm_final_6000,
         })
     return pd.DataFrame(hist)
+
+
+# ---------------------------------------------------------------------------------------------
+# Identificacion de la ganancia ultima sobre la simulacion
+def _hp(x, dt_min, win_min=15.0):
+    k = max(int(win_min / dt_min), 1) | 1               # ventana impar
+    xp = np.pad(np.asarray(x, float), k // 2, mode="edge")   # sin ceros en los bordes (evita falsos picos al inicio/final)
+    return x - np.convolve(xp, np.ones(k) / k, mode="valid")
+
+
+def amplitud_oscilacion(df, t0, t1, col="T2_C", win_min=15.0):
+    """Desviacion estandar de la componente oscilatoria (sin tendencia lenta) de `col` entre t0 y t1 [min]."""
+    dt = float(df.t_min.iloc[1] - df.t_min.iloc[0])
+    m = ((df.t_min > t0) & (df.t_min < t1)).values
+    return float(np.std(_hp(df[col].values, dt, win_min)[m]))
+
+
+def razon_decaimiento(df, col="T2_C", t0=25.0, t1=260.0, umbral=0.02):
+    """Razon de decaimiento = (2do pico)/(1er pico) de la oscilacion de `col` tras la perturbacion. nan si hay < 2 picos."""
+    dt = float(df.t_min.iloc[1] - df.t_min.iloc[0])
+    y = _hp(df[col].values, dt)
+    t = df.t_min.values
+    m = (t > t0) & (t < t1)
+    yy = y[m]
+    pk = [i for i in range(1, len(yy) - 1) if yy[i] > yy[i - 1] and yy[i] >= yy[i + 1] and yy[i] > umbral]
+    return float(yy[pk[1]] / yy[pk[0]]) if len(pk) >= 2 else float("nan")
+
+
+def _sim_P(Kc, **kw):
+    return simulate_plant_npt3_calibrated(Kc_T_override=Kc, tauI_T_override=1e6, tauD_T_override=0.0,
+                                          vac_limits_override=(-2.0, 0.0), duration_min=420.0, **kw)
+
+
+def identificar_Kcu(lo=0.012, hi=0.013, n_iter=9):
+    """Ganancia ultima Kcu [bar/C] y periodo Pu [min] del lazo de T sobre simulate_plant_npt3_calibrated.
+
+    Accion P pura (tauI muy grande), valvula sin saturar. Kcu = menor Kc con que la oscilacion de T2 no decae
+    (amplitud tardia / amplitud intermedia >= 1), por biseccion en [lo, hi] (el intervalo debe encerrar la transicion). Pu: promedio
+    del periodo entre cruces por cero a Kc = 1.03 Kcu.
+    """
+    def crece(Kc):
+        d = _sim_P(Kc)
+        return amplitud_oscilacion(d, 300, 400) / max(amplitud_oscilacion(d, 110, 170), 1e-9) >= 1.0
+    if crece(lo) or not crece(hi):
+        raise ValueError("el intervalo [lo, hi] no encierra la transicion estable -> inestable")
+    for _ in range(n_iter):
+        mid = 0.5 * (lo + hi)
+        lo, hi = (lo, mid) if crece(mid) else (mid, hi)
+    Kcu = 0.5 * (lo + hi)
+    d = _sim_P(1.03 * Kcu)
+    x = _hp(d.T2_C.values, float(d.t_min.iloc[1] - d.t_min.iloc[0]))
+    m = ((d.t_min > 250) & (d.t_min < 420)).values
+    xs, tt = x[m], d.t_min.values[m]
+    z = np.where((xs[:-1] < 0) & (xs[1:] >= 0))[0]
+    return Kcu, float(np.mean(np.diff(tt[z])))

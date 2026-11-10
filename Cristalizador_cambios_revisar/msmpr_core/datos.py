@@ -100,6 +100,11 @@ def convert_file(src: str, dst: str, **kw) -> dict:
     xl = pd.ExcelFile(src)
     sheet = "msmpr" if "msmpr" in xl.sheet_names else xl.sheet_names[0]
     wide = xl.parse(sheet)
+    if "meta" in xl.sheet_names:                       # el Excel declara su origen (hoja 'meta': campo/valor)
+        meta = xl.parse("meta")
+        declarado = str(meta.loc[meta["campo"] == "origen", "valor"].iloc[0]).strip().lower() if (meta["campo"] == "origen").any() else None
+        if declarado == "sintetico" and kw.get("origin") != "synthetic":
+            raise ValueError(f"{src} declara origen 'sintetico' en su hoja 'meta': usa origin='synthetic' (no se puede presentar como dato de planta).")
     med, ope, mapa = wide_to_long(wide, **kw)
     notes = pd.DataFrame({"nota": [
         f"Convertido de {src} (hoja '{sheet}') con msmpr_core.datos.",

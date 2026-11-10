@@ -12,6 +12,7 @@ Unidades: SI. Concentraciones en kg/m3 de pulpa (~licor), temperaturas en degC e
 from __future__ import annotations
 
 import math
+import warnings
 from copy import deepcopy
 
 M_KNO3 = 0.1011032          # kg/mol
@@ -96,6 +97,11 @@ EMPIRICAL_COEFFS = {
     "xS_d50_gains": "placeholder: ganancias de xS, d50, T",
     "level_loop": "placeholder: tauc 6 min, xS_level_gain 1.0, L_sp_lim 0.9-1.1, Kc_dens 3.0; tau1/tau2 0.7/1.4 h son del protocolo (Entrega 2)",
 }
+# Claves propias del perfil 'planta_sqm' cuya fuente NO es planta (ver BASE_PLANTA_SQM): entran en placeholders().
+PROVENANCE.update({
+    "planta_sqm.Cstar_ref_kg_m3": "placeholder: dato sintetico (datos_cristalizador.xlsx, hoja solubilidad); sin medicion de SQM",
+    "planta_sqm.solubility_slope_K_inv": "placeholder: pendiente de la base sintetica del notebook de sensibilidad",
+})
 PROVENANCE.update({f"empirico.{k}": ("placeholder" if v.startswith("placeholder") else v.split(":")[0]) for k, v in EMPIRICAL_COEFFS.items()})
 
 # ---------------------------------------------------------------------------------------------
@@ -119,7 +125,8 @@ BASE_CALIBRACION = {
 
 # ---------------------------------------------------------------------------------------------
 # Perfil 'planta_sqm': datos reconciliados de la corriente industrial 334 SSK-d (informe_parametros.md §2)
-# y solubilidad de datos_cristalizador.xlsx (hoja 'solubilidad'). Permite simular Plant con
+# y, PROVISORIAMENTE, solubilidad de datos_cristalizador.xlsx (hoja 'solubilidad'), que es un conjunto SINTETICO generado con la base del
+# notebook de sensibilidad (C*_ref = 180, pendiente 0.010 + ruido), NO una medicion de SQM. Permite simular Plant con
 # recuperación industrial realista (Y ~ 50-65 %, cumpliendo AGENTS.md: Y entre 0.3 y 0.7).
 # ---------------------------------------------------------------------------------------------
 BASE_PLANTA_SQM = {
@@ -130,8 +137,8 @@ BASE_PLANTA_SQM = {
         "OTHER": 386.5,       # interno: demás sales disueltas (1-0.3994-0.3460)*1518 kg/m3, SSK-d
     },
     "feed_temperature_C": 70.0,      # interno: corriente 334 SSK-d a 70 degC (informe_parametros.md §2)
-    "Cstar_ref_kg_m3": 177.940756,   # interno: datos_cristalizador.xlsx hoja 'solubilidad' a 40 degC
-    "solubility_slope_K_inv": 0.010, # interno: pendiente térmica de calibración
+    "Cstar_ref_kg_m3": 177.940756,   # PLACEHOLDER: dato SINTETICO (datos_cristalizador.xlsx, hoja 'solubilidad' a 40 degC); reemplazar por solubilidad real
+    "solubility_slope_K_inv": 0.010, # PLACEHOLDER: pendiente de la base sintetica del notebook de sensibilidad; reemplazar por curva real
     "rho_liquid_kg_m3": 1518.0,      # interno: densidad líquida corriente 334 SSK-d (informe_parametros.md §2)
     "solution_cp_J_kg_K": 2248.0,    # interno: Cp líquido corriente 334 SSK-d (informe_parametros.md §2)
 }
@@ -148,6 +155,17 @@ def _deep_update(p: dict, src: dict) -> None:
             p[k].update(v)
         else:
             p[k] = deepcopy(v)
+
+
+_AVISO_PLANTA_SQM = {"emitido": False}
+
+
+def _avisar_planta_sqm():
+    """Avisa una vez por sesion que C*_ref y la pendiente de solubilidad del perfil 'planta_sqm' son placeholders sinteticos."""
+    if not _AVISO_PLANTA_SQM["emitido"]:
+        _AVISO_PLANTA_SQM["emitido"] = True
+        warnings.warn("perfil 'planta_sqm': Cstar_ref_kg_m3 y solubility_slope_K_inv vienen de datos SINTETICOS (placeholder); "
+                      "los resultados de sobresaturacion/D50 son indicativos hasta tener la solubilidad real.", UserWarning, stacklevel=3)
 
 
 def make_params(profile: str = "literatura", **overrides) -> dict:
@@ -170,6 +188,7 @@ def make_params(profile: str = "literatura", **overrides) -> dict:
         p["cake_moisture_fraction"] = 0.0
     elif profile == "planta_sqm":
         _deep_update(p, BASE_PLANTA_SQM)
+        _avisar_planta_sqm()
     for k, v in overrides.items():
         if k not in p:
             raise KeyError(f"Parámetro desconocido: {k}")

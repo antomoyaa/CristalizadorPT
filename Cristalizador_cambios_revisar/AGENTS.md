@@ -28,7 +28,7 @@ control PID. Código en `msmpr_core/`; notebooks numerados en `notebooks/`; dato
 5. Los tags de instrumentos vienen del P&ID 172164 hoja 10 (A3110). Lo no leído del plano se declara como supuesto.
 
 ## Criterios de aceptación mínimos
-- Y entre 0.3 y 0.7: se cumple con `make_params("planta_sqm")` (Y ~ 64 %); con 'literatura' y 'calibracion' NO (C*_ref y alimentación placeholder).
+- Y entre 0.3 y 0.7: se cumple con `make_params("planta_sqm")` (Y ~ 64 %; OJO: su C*_ref y pendiente son placeholders sintéticos, ver docs/BASES_DE_PARAMETROS.md); con 'literatura' y 'calibracion' NO (C*_ref y alimentación placeholder).
 - Y_liq = Y_sol (|dif| < 1e-6).  El ajuste recupera parámetros sintéticos dentro de IC95.
 - En lazo abierto el estacionario no deriva.
 

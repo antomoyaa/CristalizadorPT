@@ -1,6 +1,5 @@
 """Pruebas de la revisión: vacío-T, holgura del PID, trim de AIT 3105, balance de masa y procedencia de constantes."""
 import inspect
-import math
 import warnings
 
 import numpy as np
@@ -234,3 +233,85 @@ def test_dinamico_T_sigue_a_la_presion_via_vac_T():
     d = sim_npt3(duration_min=300.0)
     ult = d.iloc[-1]
     assert abs(ult.T1_C - (plant.vac_T(ult.P_vac1_bar, 1) + 0.45 * 3.5)) < 1.0
+
+
+# ---------------------------------------------------------------- identificacion de Kcu y modos de sintonia
+@pytest.fixture(scope="module")
+def modos():
+    return {m: sim_npt3(tuning_mode=m) for m in ("ZN_oscillatory", "Hopf_limit_cycle", "TL_damped")}
+
+
+def test_kcu_identificado_reproduce_las_constantes():
+    Kcu, Pu = plant.identificar_Kcu()
+    assert Kcu == pytest.approx(plant.KCU_SIM["Kcu_bar_C"], rel=0.02)
+    assert Pu == pytest.approx(plant.KCU_SIM["Pu_min"], rel=0.05)
+
+
+def test_por_debajo_y_por_encima_de_kcu():
+    Kcu = plant.KCU_SIM["Kcu_bar_C"]
+    est = plant._sim_P(0.9 * Kcu)
+    ines = plant._sim_P(1.1 * Kcu)
+    assert plant.amplitud_oscilacion(est, 300, 400) < 0.05           # decae
+    assert plant.amplitud_oscilacion(ines, 300, 400) > 0.5           # oscilacion sostenida
+
+
+def test_zn_decae_con_razon_cercana_a_un_cuarto(modos):
+    dr = plant.razon_decaimiento(modos["ZN_oscillatory"])
+    assert 0.15 <= dr <= 0.5
+    assert plant.amplitud_oscilacion(modos["ZN_oscillatory"], 200, 300) < 0.05
+
+
+def test_hopf_no_decae(modos):
+    assert plant.razon_decaimiento(modos["Hopf_limit_cycle"]) > 1.0
+    assert plant.amplitud_oscilacion(modos["Hopf_limit_cycle"], 200, 300) > 0.5
+
+
+def test_tl_amortiguado_sin_oscilacion(modos):
+    assert plant.amplitud_oscilacion(modos["TL_damped"], 200, 300) < 0.05
+
+
+def test_los_tres_modos_cumplen_el_orden_de_agresividad(modos):
+    a = {m: plant.amplitud_oscilacion(d, 100, 140) for m, d in modos.items()}
+    assert a["Hopf_limit_cycle"] > a["ZN_oscillatory"] and a["Hopf_limit_cycle"] > a["TL_damped"]
+
+
+def test_override_de_sintonia_cambia_el_resultado():
+    base = sim_npt3(duration_min=120.0)
+    sub = sim_npt3(duration_min=120.0, Kc_T_override=0.0005)
+    assert not np.allclose(base.T2_C.values, sub.T2_C.values)
+
+
+def test_razon_decaimiento_sin_picos_es_nan(modos):
+    assert np.isnan(plant.razon_decaimiento(modos["TL_damped"]))
+
+
+def test_filtro_pasa_alto_sin_efecto_de_borde():
+    x = np.full(6000, 40.0)
+    assert np.abs(plant._hp(x, 0.05)).max() < 1e-9
+
+
+# ---------------------------------------------------------------- procedencia de los datos del perfil planta_sqm
+def test_planta_sqm_solubilidad_marcada_como_placeholder():
+    for k in ("planta_sqm.Cstar_ref_kg_m3", "planta_sqm.solubility_slope_K_inv"):
+        assert params.PROVENANCE[k].startswith("placeholder")
+        assert k in params.placeholders()
+    src = inspect.getsource(params)
+    assert "interno: datos_cristalizador.xlsx" not in src      # ya no se presenta el dato sintetico como interno
+
+
+def test_planta_sqm_avisa_una_vez_que_la_solubilidad_es_sintetica():
+    params._AVISO_PLANTA_SQM["emitido"] = False
+    with pytest.warns(UserWarning, match="SINTETICOS"):
+        params.make_params("planta_sqm")
+    with warnings.catch_warnings(record=True) as w:           # segunda llamada: silencio
+        warnings.simplefilter("always")
+        params.make_params("planta_sqm")
+    assert not [x for x in w if "SINTETICOS" in str(x.message)]
+
+
+def test_otros_perfiles_no_avisan():
+    params._AVISO_PLANTA_SQM["emitido"] = False
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        params.make_params("literatura"); params.make_params("calibracion")
+    assert not [x for x in w if "SINTETICOS" in str(x.message)]

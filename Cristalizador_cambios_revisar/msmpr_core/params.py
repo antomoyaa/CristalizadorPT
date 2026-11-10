@@ -242,3 +242,80 @@ def literature_table(csv_path: str):
     """Lee parametros/parametros_DPBE.csv (informe de parámetros) como DataFrame para consulta."""
     import pandas as pd
     return pd.read_csv(csv_path, encoding="utf-8-sig")
+
+# ---------------------------------------------------------------------------------------------
+# Datos conciliados de Magnesio (Mg2+) y Perclorato (ClO4-) desde las 5 planillas de planta:
+# 1) Balance_de_masa_segun_PFD_completo.xlsx (hojas 'Propiedades' y 'Corrientes')
+# 2) Balances de Masa detallado v6.xlsx (hojas 'Balance Químico' y 'Balance NPT3')
+# 3) Base de datos.xlsx (histórico 2025-2026: SSK, MLK, ML Refi, Cristal Crudo y Refinado)
+# 4) AQ SSKd.xlsx (campaña oct-nov 2026: SSK, SSKd y Flujos)
+# 5) AG NPT_3 (3000 y 6000)_.xlsx (granulometría histórica D50 y D80 en Áreas 3000 y 6000)
+# ---------------------------------------------------------------------------------------------
+MG_CLO4_PLANT_DATA = {
+    # --- Flujos másicos nominales PFD / v6 [t/h] ---
+    "F_208_SSK_t_h": 356.85,
+    "F_234_ML_ref_t_h": 21.33,
+    "F_303_agua_dil_t_h": 27.14,
+    "F_313_agua_rep_t_h": 11.97,
+    "F_327_agua_lav_t_h": 4.61,
+    "F_1_SSKd_t_h": 405.32,
+    "F_6_A3110_out_t_h": 390.23,
+    "F_11_A3210_out_t_h": 390.23,
+    "F_17_queque_crudo_t_h": 76.48508,
+    "F_prod_refinado_v6_t_h": 65.30817,
+    "F_MLK_recirc_v6_t_h": 223.670822,
+    "F_MLK_purga_v6_t_h": 109.196982,
+    # --- Fracción másica total por corriente [ppm = mg/kg] (PFD / v6) ---
+    "w_Mg_208_ppm": 10206.0,       # 0.010206 en SSK total (10858 ppm en fase líquida)
+    "w_ClO4_208_ppm": 3892.0,      # 0.003892 en SSK total (4140 ppm en fase líquida)
+    "w_Mg_234_ppm": 2397.0,        # 0.002397 en ML refinación (2445 ppm en fase líquida)
+    "w_ClO4_234_ppm": 738.0,       # 0.000738 en ML refinación (753 ppm en fase líquida)
+    "w_Mg_303_ppm": 329.0,         # 0.000329 en agua industrial (303, 313, 327)
+    "w_ClO4_303_ppm": 36.0,        # 0.000036 en agua industrial (303, 313, 327)
+    "w_Mg_1_SSKd_ppm": 9134.0,     # 0.009134 en corriente 1/334 SSK-d (9654 ppm en líquido)
+    "w_ClO4_1_SSKd_ppm": 3468.0,   # 0.003468 en corriente 1/334 SSK-d (3665 ppm en líquido)
+    # --- Fracción másica en el líquido por etapa [ppm] (PFD Corrientes) ---
+    "wL_Mg_A3110_ppm": 10767.0,    # 0.010767 en licor salida A3110 (corriente 6)
+    "wL_ClO4_A3110_ppm": 4088.0,   # 0.004088 en licor salida A3110 (corriente 6)
+    "wL_Mg_A3210_ppm": 11720.0,    # 0.011720 en licor salida A3210 / S3540 (corriente 11/29/12)
+    "wL_ClO4_A3210_ppm": 4446.0,   # 0.004446 en licor salida A3210 / S3540 (corriente 11/29/12)
+    "wL_Mg_lav_S3550_ppm": 10748.0,# 0.010748 en licor retenido y filtrado S3550 (corrientes 15-24)
+    "wL_ClO4_lav_S3550_ppm": 4070.0,# 0.004070 en licor retenido y filtrado S3550 (corrientes 15-24)
+    "w_Mg_MLK_v6_ppm": 10578.0,    # 0.010578 en MLK purga/recirculación (v6)
+    "w_ClO4_MLK_v6_ppm": 4012.0,   # 0.004012 en MLK purga/recirculación (v6)
+    # --- Sales reconstituidas en fase líquida A3210 [fracción másica] (PFD) ---
+    "x_KClO4_A3210": 0.006194,
+    "x_MgSO4_A3210": 0.022750,
+    "x_MgCl2_A3210": 0.027914,
+    "h_licor_por_crudo_v6": 0.070012,  # w_H2O_crudo (0.0339) / w_H2O_MLK (0.4842)
+    "moisture_post_wash_PFD": 0.04997, # 1.912127 / 38.24254 (5.0 % licor retenido de lavado en queque 17)
+    # --- Calidad en sólido crudo (corriente 17) y refinado (Área 6000) [ppm] ---
+    "ppm_Mg_crudo_PFD": 537.0,
+    "ppm_Mg_crudo_v6": 740.0,
+    "ppm_ClO4_crudo_PFD": 203.0,
+    "ppm_ClO4_crudo_v6": 281.0,
+    "ppm_Mg_refinado_v6": 144.0,
+    "ppm_Mg_refinado_espec_v6": 72.0,
+    "ppm_ClO4_refinado_v6": 44.0,
+    "ppm_ClO4_refinado_espec_v6": 22.1486,
+    # --- Estadísticas históricas de laboratorio IC/AA (Base de datos.xlsx y AQ SSKd.xlsx) ---
+    "lab_SSK_Mg_g_L": {"mean": 32.1115, "median": 32.0, "std": 4.3406, "p25": 29.3, "p75": 35.0, "max": 50.0, "aq_2026_mean": 28.6820},
+    "lab_SSK_ClO4_g_L": {"mean": 3.7993, "median": 3.90, "std": 0.4890, "p25": 3.50, "p75": 4.20, "max": 6.00, "aq_2026_mean": 4.4735},
+    "lab_SSK_KClO4_g_L": {"mean": 5.2909, "median": 5.40, "std": 0.6805, "p25": 4.90, "p75": 5.80, "max": 8.40, "aq_2026_mean": 6.2304},
+    "lab_MLK_Mg_g_L": {"mean": 31.0317, "median": 31.0, "std": 4.2458, "p25": 28.6, "p75": 34.0, "max": 47.0},
+    "lab_MLK_ClO4_g_L": {"mean": 3.5862, "median": 3.60, "std": 0.4970, "p25": 3.30, "p75": 4.00, "max": 6.30},
+    "lab_ML_refi_Mg_g_L": {"mean": 5.7698, "median": 5.60, "std": 2.4145, "p25": 4.10, "p75": 7.30, "max": 55.0},
+    "lab_ML_refi_ClO4_g_L": {"mean": 1.5876, "median": 1.30, "std": 1.0116, "p25": 0.88, "p75": 2.10, "max": 6.60},
+    "lab_crudo_Mg_ppm": {"mean": 991.9, "median": 1000.0, "std": 425.3, "p25": 690.0, "p75": 1300.0, "max": 2900.0},
+    "lab_crudo_ClO4_ppm": {"mean": 314.7, "median": 202.0, "std": 291.8, "p25": 136.0, "p75": 432.75, "max": 3545.0},
+    "lab_refinado_Mg_ppm": {"mean": 61.1, "median": 60.0, "std": 28.6, "p25": 40.0, "p75": 70.0, "max": 350.0},
+    "lab_refinado_ClO4_ppm": {"mean": 30.86, "median": 21.0, "std": 19.19, "p25": 20.0, "p75": 36.0, "max": 263.0},
+    # --- Granulometría histórica AG NPT_3 (3000 y 6000)_.xlsx [um] ---
+    "granulo_AG_A3000_D50_um": {"mean": 380.4, "min": 295.7, "max": 470.0},
+    "granulo_AG_A6000_D50_um": {"mean": 330.1, "min": 272.0, "max": 422.2},
+}
+
+PROVENANCE["MG_CLO4_PLANT_DATA"] = (
+    "interno: conciliado desde Balance_de_masa_segun_PFD_completo.xlsx, "
+    "Balances de Masa detallado v6.xlsx, Base de datos.xlsx, AQ SSKd.xlsx y AG NPT_3 (3000 y 6000)_.xlsx"
+)

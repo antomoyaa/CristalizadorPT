@@ -268,7 +268,6 @@ class PlantController:
         self.last = dict(u_nom)
 
     def __call__(self, t, x, plant):
-        p = plant.p
         u = dict(self.u_nom)
         d = plant.d_nom
         m = plant.metrics(x, u, d)

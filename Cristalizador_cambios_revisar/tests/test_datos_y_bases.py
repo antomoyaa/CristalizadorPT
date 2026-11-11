@@ -13,8 +13,18 @@ from msmpr_core import params as P
 from msmpr_core.datos import wide_to_long
 from msmpr_core.plant import Plant
 
-CAL_NB = os.environ.get("CALIBRACION_NB", "")
-PARETO_NB = os.environ.get("PARETO_NB", "")
+_REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+_ANT = os.path.join(_REPO, "Anteriores", "Datos_antiguos")
+
+
+def _default_nb(env, nombre):
+    """Ruta por variable de entorno o, si no esta definida, la copia versionada en Anteriores/Datos_antiguos (si existe)."""
+    ruta = os.environ.get(env, "") or os.path.join(_ANT, nombre)
+    return ruta if os.path.isfile(ruta) else ""
+
+
+CAL_NB = _default_nb("CALIBRACION_NB", "calibracion_do_crystal.ipynb")
+PARETO_NB = _default_nb("PARETO_NB", "MSMPR_KNO3_DPBE_sensibilidad_Pareto.ipynb")
 
 
 def _wide(n=6):
@@ -48,7 +58,7 @@ def test_converter_operation_starts_at_zero_and_covers_every_observation():
     assert sorted(mapa.run) == sorted(_wide().run)
 
 
-@pytest.mark.skipif(not (CAL_NB and PARETO_NB), reason="definir CALIBRACION_NB y PARETO_NB para validar contra el notebook de calibración")
+@pytest.mark.skipif(not (CAL_NB and PARETO_NB), reason="falta calibracion_do_crystal.ipynb: definir CALIBRACION_NB (o copiarlo a Anteriores/Datos_antiguos) y PARETO_NB")
 def test_converted_file_passes_calibration_notebook_validators():
     import matplotlib
     matplotlib.use("Agg")
@@ -108,3 +118,16 @@ def test_planta_sqm_profile_has_mg_and_meets_recovery_criterion():
     m = pl.metrics(x, u, d)
     assert 0.30 <= m["Y_sol"] <= 0.70
     assert abs(m["Y_cierre"]) < 1e-8
+
+def test_convert_file_rechaza_datos_sinteticos_declarados_como_planta(tmp_path):
+    """Un Excel con meta.origen = 'sintetico' no puede convertirse con origin distinto de 'synthetic'."""
+    import pandas as pd
+    from msmpr_core import datos
+    wide = pd.DataFrame({"run": ["R01"], "d": [0.0], "T_C": [40.0], "tau_h": [0.6], "crystal_flow_kg_h": [1.0],
+                         "D50_um": [200.0], "C_kg_m3": [180.0], "sd_crystal_flow_kg_h": [0.1], "sd_D50_um": [5.0], "sd_C_kg_m3": [0.5]})
+    src = tmp_path / "d.xlsx"
+    with pd.ExcelWriter(src) as xw:
+        wide.to_excel(xw, sheet_name="msmpr", index=False)
+        pd.DataFrame({"campo": ["origen"], "valor": ["sintetico"]}).to_excel(xw, sheet_name="meta", index=False)
+    with pytest.raises(ValueError, match="sintetico"):
+        datos.convert_file(str(src), str(tmp_path / "o.xlsx"), crystallizer="A3110", origin="plant", volume_m3=660.0, feed_kno3_kg_m3=525.0)

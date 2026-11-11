@@ -76,3 +76,19 @@ Obliga a declarar equipo y origen, y a pasar volumen y alimentación (no vienen 
 - `plant.vac_T(P, etapa)` / `vac_P(T, etapa)`: T = Tsat_agua(P) + elevación del punto de ebullición (ajustada a DWSIM: 11,59 kPa -> 55 C; 5,43 kPa -> 40 C). K1, K2 se calculan de esta función (≈161 y ≈320 K/bar; los 133/255 de v2.1.0 ignoraban la elevación del punto de ebullición).
 - `plant.granulometria_estacionaria(P1, P2, ...)` y D50 dinámico en `simulate_plant_npt3_calibrated`: P -> T -> sobresaturación (MSMPR `dpbe`) -> D50, anclado a los D50 de planta (541 / 514 um, reporte de seguimiento, agosto 2026). Se reemplaza el término empírico `sigma_burst`. Columnas `d50_1_um`, `d50_2_um`, `sigma1`, `sigma2`.
 - OJO: la sensibilidad usa la cinética placeholder del perfil `planta_sqm`; con ella +-0,02 bar mueve el D50 ~3-5 %.
+
+## [v2.3.0] - Sintonías de T identificadas sobre la simulación
+- `plant.identificar_Kcu()`: Kcu y Pu del lazo de T (acción P pura, válvula sin saturar) por bisección sobre `simulate_plant_npt3_calibrated`. Resultado: Kcu = 0,01241 bar/°C, Pu = 9,70 min (`plant.KCU_SIM`). La tabla FOPDT del notebook 05 (Kp = 375, tau_p = 5,5, theta = 1) daba Kcu = 0,028 y Pu = 3,3 min: no representa la planta simulada.
+- Modos: `Hopf_limit_cycle` = Kcu (PI, tauI = Pu/1,2; no decae, razón de decaimiento 1,74); `ZN_oscillatory` = 0,45 Kcu, tauI = Pu/1,2 (razón de decaimiento 0,31 ≈ 1/4; antes oscilaba sin decaer); `TL_damped` sin cambios (Kc = 0,42 Kcu).
+- Nuevos kwargs de `simulate_plant_npt3_calibrated`: `Kc_T_override`, `tauI_T_override`, `tauD_T_override`, `vac_limits_override`. Nuevas utilidades: `razon_decaimiento`, `amplitud_oscilacion`.
+- Notebook 05: tabla 1b (sintonías identificadas); la figura 3 usa simulaciones.
+
+## [v2.4.0] - Procedencia de datos y documentación de bases
+- `params`: `Cstar_ref_kg_m3 = 177,94` y `solubility_slope_K_inv = 0,010` del perfil `planta_sqm` pasan de "interno" a **placeholder (dato sintético)**; `make_params("planta_sqm")` avisa una vez por sesión. Entradas `planta_sqm.*` en `PROVENANCE`.
+- `docs/BASES_DE_PARAMETROS.md`: tabla de las tres bases y qué no se puede mezclar.
+
+## [v2.5.0] - Fusión con los commits "revisandou" de PID
+- `plant.py`: el bloque agregado en "revisandou" duplicaba `simulate_plant_npt3_calibrated` y `simular_recirculacion_y_magnesio` (la segunda definición tapaba a la primera, incluidas las mejoras de Kcu/nivel/granulometría). Queda **una sola** definición de cada una: el tren integrado con Mg2+ del equipo + sintonías identificadas.
+- Corrige `KeyError: 'w_Mg_MLK_v6_ppm'` en `simular_recirculacion_y_magnesio` (faltaban `w_Mg_MLK_v6_ppm` y `w_ClO4_MLK_v6_ppm` en `PFD_MG_CLO4`).
+- Notebooks 04-06: la primera celda que importa `msmpr_core` fija la ruta y el directorio de trabajo (VS Code puede abrir el kernel en la raíz del repo); se agrega `display` de IPython; la celda de conciliación Mg/ClO4 del 06 queda ejecutable.
+- Pruebas: sin funciones duplicadas, claves de `PFD_MG_CLO4`, los tres modos de recirculación, columnas de Mg.

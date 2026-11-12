@@ -41,6 +41,9 @@ VAC = {
     "P1_lim": (-0.920, -0.870), "P2_lim": (-0.975, -0.940),                      # (min, max) supuestos de diseño
     "Kc_scale1": 375.0 / 133.0, "Kc_scale2": 375.0 / 255.0,                      # conserva la ganancia de lazo con que se sintonizó
 }
+# Ganancia ultima y periodo de los lazos de temperatura (TIR -> PIRCAL), identificados SOBRE ESTA SIMULACION con accion P pura y valvula
+# sin saturar (identificar_Kcu). Kc en [bar/C] antes del reescalado por etapa. Reemplazan a los de la tabla FOPDT (Kp=375, tau_p=5.5, theta=1).
+KCU_SIM = {"Kcu_bar_C": 0.012407, "Pu_min": 9.70}
 K_TRIM_AIT = 5.2e-5          # [1/ppm] razón extra de dilución por ppm de ClO4 sobre 3714.1 (placeholder; decisión económica)
 F303_NOM, F_PRE_NOM = 27.14, 378.18
 R_0_NOM = F303_NOM / F_PRE_NOM          # 0.07176: razón dilución / alimentación previa (no es feed_dilution_fraction)
@@ -307,6 +310,33 @@ def simulate(plant: Plant, x0, t_end_s, dt_s, controller, disturbance=None, log_
 from msmpr_core.control import DelayedSensor, CommercialPID
 import pandas as pd
 
+# Constantes conciliadas desde Balance_de_masa_segun_PFD_completo.xlsx, v6 y Base de datos.xlsx
+PFD_MG_CLO4 = {
+    "w_Mg_208_ppm": 10206.0,      # Corriente 208 SSK (0.010206 total; 10858 ppm líquido)
+    "w_ClO4_208_ppm": 3892.0,     # Corriente 208 SSK (0.003892 total; 4140 ppm líquido)
+    "w_Mg_234_ppm": 2397.0,       # Corriente 234 ML Refinación (0.002397 total; 5.77 g/L BD)
+    "w_ClO4_234_ppm": 738.0,      # Corriente 234 ML Refinación (0.000738 total; 1.59 g/L BD)
+    "w_Mg_303_ppm": 329.0,        # Corriente 303 Agua dilución (0.000329)
+    "w_ClO4_303_ppm": 36.0,       # Corriente 303 Agua dilución (0.000036)
+    "w_Mg_pre_nom_ppm": (356.85 * 10206.0 + 21.33 * 2397.0) / 378.18,   # 9765.5 ppm antes de agua 303
+    "w_ClO4_pre_nom_ppm": (356.85 * 3892.0 + 21.33 * 738.0) / 378.18,   # 3714.1 ppm antes de agua 303
+    "w_Mg_1_nom_ppm": 9134.0,     # Corriente 1/334 SSK-d entrada A3110
+    "w_ClO4_1_nom_ppm": 3468.0,   # Corriente 1/334 SSK-d entrada A3110
+    "wL_Mg_A3110_ppm": 10767.0,   # Licor salida A3110 (corriente 6)
+    "wL_Mg_A3210_ppm": 11720.0,   # Licor salida A3210 / S3540 (corriente 11)
+    "wL_Mg_lav_3000_ppm": 10748.0,# Licor lavado S3550 (corrientes 15-24)
+    "wL_ClO4_lav_3000_ppm": 4070.0,# Licor lavado S3550 (corrientes 15-24)
+    "C_Mg_SSK_lab_g_L": 32.1115,  # Base de datos.xlsx hoja SSK (AQ SSKd 2026: 28.68 g/L)
+    "C_Mg_MLK_lab_g_L": 31.0317,  # Base de datos.xlsx hoja Purga-Recirculación (MLK)
+    "C_ClO4_MLK_lab_g_L": 3.5862, # Base de datos.xlsx hoja Purga-Recirculación (KClO4: 5.00 g/L)
+    "C_Mg_MLref_lab_g_L": 5.7698, # Base de datos.xlsx hoja ML Refi
+    "w_Mg_MLK_v6_ppm": 10578.0,   # MLK purga/recirculacion v6 (0.010578)  <- faltaba: KeyError en simular_recirculacion_y_magnesio
+    "w_ClO4_MLK_v6_ppm": 4012.0,  # MLK purga/recirculacion v6 (0.004012)
+}
+
+
+
+
 def simulate_plant_npt3_calibrated(
     use_AIT3105=True,
     use_AIC3255=True,
@@ -315,23 +345,31 @@ def simulate_plant_npt3_calibrated(
     dt_min=0.05,
     theta_AIT_min=10.0,
     density_cascade=False,
+    Kc_T_override=None,
+    tauI_T_override=None,
+    tauD_T_override=None,
+    vac_limits_override=None,
 ):
     """Simula el tren integrado Área 2000 (B2510) -> Área 3000 (A3110/A3210/B3520) -> Área 6000.
 
-    Nivel de A3110 y A3210 mantenido en LEVEL["level_sp_pct"] (60 %). `density_cascade=False` (defecto): la consigna de nivel queda fija
-    y la densidad solo se mide; True restituye la cascada DIC -> LIC (el maestro de densidad mueve la consigna de nivel).
-    Vinculo vacio -> T -> sobresaturacion -> D50: T = vac_T(P) y el D50 de cada etapa sigue al MSMPR estacionario (granulometria_estacionaria).
+    Integra las composiciones de Mg2+ y ClO4- de Balance_de_masa_segun_PFD_completo.xlsx, v6 y Base de datos.xlsx.
     """
     n_steps = int(duration_min / dt_min)
-    w_ClO4_pre, T1, T2 = 3714.1, 55.0, 40.0
+    w_ClO4_pre = PFD_MG_CLO4["w_ClO4_pre_nom_ppm"]
+    w_Mg_pre = PFD_MG_CLO4["w_Mg_pre_nom_ppm"]
+    T1, T2 = 55.0, 40.0
     v_T1, v_T2 = 0.0, 0.0
     xS1, xS2 = 0.130, 0.200
     D50_1N, D50_2N = GRANULO["D50_nom1_um"], GRANULO["D50_nom2_um"]
     d50_1, d50_2 = D50_1N, D50_2N
-    d50_k1 = d50_k2 = 1.0                     # razones d50_mec / d50_mec_nominal (se actualizan cada update_every_min)
+    d50_k1 = d50_k2 = 1.0
     sigma1 = sigma2 = float("nan")
     n_upd = max(int(round(GRANULO["update_every_min"] / dt_min)), 1)
-    C_ClO4_B3520, w_ClO4_ML_ref, F_303_actual = 4.00, 738.0, 27.14
+    C_ClO4_B3520 = 4.00
+    C_Mg_B3520 = PFD_MG_CLO4["C_Mg_MLK_lab_g_L"]
+    w_ClO4_ML_ref = PFD_MG_CLO4["w_ClO4_234_ppm"]
+    w_Mg_ML_ref = PFD_MG_CLO4["w_Mg_234_ppm"]
+    F_303_actual = F303_NOM
 
     is_osc = tuning_mode == "ZN_oscillatory"
     is_hopf = tuning_mode == "Hopf_limit_cycle"
@@ -344,18 +382,25 @@ def simulate_plant_npt3_calibrated(
     sens_AIC3255 = DelayedSensor(10.0, 2.0, dt_min, C_ClO4_B3520)
     sens_FIRC3103 = DelayedSensor(0.10, 0.08, dt_min, F_303_actual)
 
+    # Sintonias de T: Hopf = Kcu (limite de estabilidad); Z-N PI = 0.45 Kcu, tauI = Pu/1.2 (decaimiento ~1/4 en la simulacion);
+    # T-L amortiguada = valores historicos (Kc = 0.42 Kcu, con accion derivativa).
     if is_hopf:
-        Kc_T, tauI_T, tauD_T = 0.0152, 3.2, 0.0
+        Kc_T, tauI_T, tauD_T = KCU_SIM["Kcu_bar_C"], KCU_SIM["Pu_min"] / 1.2, 0.0
         Kc_D, tauI_D = -2100.0, 8.5
     elif is_osc:
-        Kc_T, tauI_T, tauD_T = 0.0095, 3.8, 0.25
+        Kc_T, tauI_T, tauD_T = 0.45 * KCU_SIM["Kcu_bar_C"], KCU_SIM["Pu_min"] / 1.2, 0.0
         Kc_D, tauI_D = -1350.0, 11.0
     else:
         Kc_T, tauI_T, tauD_T = 0.0052, 9.5, 0.60
         Kc_D, tauI_D = -650.0, 28.0
 
-    pid_TP1 = CommercialPID(Kc_T * VAC["Kc_scale1"], tauI_T, tauD_T, 55.0, VAC["P1_nom"], *VAC["P1_lim"])
-    pid_TP2 = CommercialPID(Kc_T * VAC["Kc_scale2"], tauI_T, tauD_T, 40.0, VAC["P2_nom"], *VAC["P2_lim"])
+    # Sobrescritura de la sintonia de T (identificacion de Kcu, analisis de sensibilidad). Kc_T en [bar/C] antes del reescalado por etapa.
+    Kc_T = Kc_T if Kc_T_override is None else Kc_T_override
+    tauI_T = tauI_T if tauI_T_override is None else tauI_T_override
+    tauD_T = tauD_T if tauD_T_override is None else tauD_T_override
+    lim1, lim2 = (VAC["P1_lim"], VAC["P2_lim"]) if vac_limits_override is None else (vac_limits_override, vac_limits_override)
+    pid_TP1 = CommercialPID(Kc_T * VAC["Kc_scale1"], tauI_T, tauD_T, 55.0, VAC["P1_nom"], *lim1)
+    pid_TP2 = CommercialPID(Kc_T * VAC["Kc_scale2"], tauI_T, tauD_T, 40.0, VAC["P2_nom"], *lim2)
     # Cascada DIC (densidad, maestro lento) -> LIC (nivel, esclavo rapido) -> caudal de descarga (SIC 3101/3201).
     # El maestro de densidad ya no manda el caudal: ajusta la consigna de nivel (retencion) dentro de LEVEL["L_sp_lim"].
     # La severidad del modo (ZN / Hopf) se conserva escalando su ganancia respecto de la sintonia amortiguada (-650).
@@ -365,7 +410,7 @@ def simulate_plant_npt3_calibrated(
     L1, L2 = 1.0, 1.0
     pid_DIR1 = CommercialPID(k_dens, tauI_D, 0.0, 0.130, 1.0, *LEVEL["L_sp_lim"])
     pid_DIR2 = CommercialPID(k_dens, tauI_D, 0.0, 0.200, 1.0, *LEVEL["L_sp_lim"])
-    kc_L1 = -60.0 * M1_nom / LEVEL["tauc_min"]          # [t/h por unidad de L]; negativo: nivel alto -> mas descarga
+    kc_L1 = -60.0 * M1_nom / LEVEL["tauc_min"]
     kc_L2 = -60.0 * M2_nom / LEVEL["tauc_min"]
     ti_L = LEVEL["tauI_factor"] * LEVEL["tauc_min"]
     pid_LIC1 = CommercialPID(kc_L1, ti_L, 0.0, 1.0, LEVEL["F_nom"], 250.0, 520.0)
@@ -380,17 +425,20 @@ def simulate_plant_npt3_calibrated(
         t = k * dt_min
         F_208 = 356.85 * (1.08 if 25.0 <= t < 140.0 else 1.0)
         T_in_1 = 70.0 + (3.5 if t >= 25.0 else 0.0)
-        w_ClO4_208 = 3892.0 + (650.0 if t >= 80.0 else 0.0)
+        w_ClO4_208 = PFD_MG_CLO4["w_ClO4_208_ppm"] + (650.0 if t >= 80.0 else 0.0)
+        w_Mg_208 = PFD_MG_CLO4["w_Mg_208_ppm"]
         F_234 = 21.33
         F_pre = F_208 + F_234
 
         w_ClO4_pre_target = (F_208 * w_ClO4_208 + F_234 * w_ClO4_ML_ref) / F_pre
+        w_Mg_pre_target = (F_208 * w_Mg_208 + F_234 * w_Mg_ML_ref) / F_pre
         w_ClO4_pre += (dt_min / 8.0) * (w_ClO4_pre_target - w_ClO4_pre)
+        w_Mg_pre += (dt_min / 8.0) * (w_Mg_pre_target - w_Mg_pre)
 
         R_0 = R_0_NOM
         if use_AIT3105:
             ait3105_pv = sens_AIT3105.read(w_ClO4_pre)
-            R_eff = R_0 + K_TRIM_AIT * (ait3105_pv - 3714.1)
+            R_eff = R_0 + K_TRIM_AIT * (ait3105_pv - PFD_MG_CLO4["w_ClO4_pre_nom_ppm"])
         else:
             R_eff = R_0
 
@@ -400,7 +448,8 @@ def simulate_plant_npt3_calibrated(
         F_303_actual += (dt_min / 0.133) * (valve_cmd - F_303_actual)
 
         F_1 = F_pre + F_303_actual
-        w_ClO4_1 = (F_pre * w_ClO4_pre + F_303_actual * 36.0) / F_1
+        w_ClO4_1 = (F_pre * w_ClO4_pre + F_303_actual * PFD_MG_CLO4["w_ClO4_303_ppm"]) / F_1
+        w_Mg_1 = (F_pre * w_Mg_pre + F_303_actual * PFD_MG_CLO4["w_Mg_303_ppm"]) / F_1
 
         P_vac1 = pid_TP1.step(sens_TIR3101.read(T1), dt_min)
         P_vac2 = pid_TP2.step(sens_TIR3201.read(T2), dt_min)
@@ -409,7 +458,6 @@ def simulate_plant_npt3_calibrated(
             pid_LIC2.sp = pid_DIR2.step(sens_DIR3201.read(xS2), dt_min)
         F_6 = pid_LIC1.step(sens_LIC1.read(L1), dt_min)
         F_11 = pid_LIC2.step(sens_LIC2.read(L2), dt_min)
-        # balances de inventario (t/h -> t/min = /60); vapor y perdidas del A3110 constantes; F_25 = F_21 en A3210
         M1 += (F_1 - F_VAPOR_A3110 - F_PERDIDAS_A3110 - F_6) * dt_min / 60.0
         M2 += (F_6 - F_11) * dt_min / 60.0
         L1, L2 = M1 / M1_nom, M2 / M2_nom
@@ -431,7 +479,6 @@ def simulate_plant_npt3_calibrated(
         xS1 += (dt_min / 9.0) * (xS1_eq - xS1)
         xS2 += (dt_min / 9.0) * (xS2_eq - xS2)
 
-        # Granulometria: T (fijada por el vacio) -> sobresaturacion -> D50 via MSMPR estacionario, anclado en los D50 de planta.
         if k % n_upd == 0:
             try:
                 r1n, r2n, _, _ = _ref_nominal()
@@ -439,8 +486,8 @@ def simulate_plant_npt3_calibrated(
                 if m1 > 0.0 and m2 > 0.0:
                     d50_k1, d50_k2 = m1 / r1n, m2 / r2n
             except (ValueError, RuntimeError):
-                pass                                   # sin solucion estacionaria: se mantiene la razon anterior
-        s2 = D50_2N / 185.0                            # reescala las ganancias empiricas (definidas con 185 um) al D50 de planta
+                pass
+        s2 = D50_2N / 185.0
         d50_1_eq = D50_1N * d50_k1
         d50_2_eq = D50_2N * d50_k2 + s2 * (180.0 * (xS2 - 0.200) + 0.35 * (390.23 - F_11))
         d50_1 += (dt_min / GRANULO["tau_d50_min"]) * (d50_1_eq - d50_1)
@@ -448,154 +495,44 @@ def simulate_plant_npt3_calibrated(
         d50_floor = GRANULO["d50_floor_frac"] * D50_2N
 
         C_ClO4_in_eq = 4.00 * (w_ClO4_1 / 3468.0) ** 1.45 * (0.22 / max(alpha_purge, 0.05)) ** 0.50
+        C_Mg_in_eq = PFD_MG_CLO4["C_Mg_MLK_lab_g_L"] * (w_Mg_1 / 9134.0) * (0.22 / max(alpha_purge, 0.05)) ** 0.35
         C_ClO4_B3520 += (dt_min / 24.0) * (C_ClO4_in_eq - C_ClO4_B3520)
+        C_Mg_B3520 += (dt_min / 24.0) * (C_Mg_in_eq - C_Mg_B3520)
 
         coprecip_ppm = max(C_ClO4_B3520 - 4.50, 0.0) * 82.0
         moisture_17 = 0.050 * (D50_2N / max(d50_2, d50_floor)) ** 0.65
-        w_ClO4_lav_3000 = 4070.0 * (C_ClO4_B3520 / 4.00)
+        w_ClO4_lav_3000 = PFD_MG_CLO4["wL_ClO4_lav_3000_ppm"] * (C_ClO4_B3520 / 4.00)
+        w_Mg_lav_3000 = PFD_MG_CLO4["wL_Mg_lav_3000_ppm"] * (C_Mg_B3520 / PFD_MG_CLO4["C_Mg_MLK_lab_g_L"])
         ppm_ClO4_17 = moisture_17 * w_ClO4_lav_3000 + coprecip_ppm
+        ppm_Mg_17 = moisture_17 * w_Mg_lav_3000
 
         rem_eff_6000 = 1.0 - (1.0 - 0.899) * (D50_2N / max(d50_2, d50_floor)) ** 0.85
-        w_ClO4_ML_ref_eq = 738.0 * (ppm_ClO4_17 / 203.5)
+        w_ClO4_ML_ref_eq = PFD_MG_CLO4["w_ClO4_234_ppm"] * (ppm_ClO4_17 / 203.5)
+        w_Mg_ML_ref_eq = PFD_MG_CLO4["w_Mg_234_ppm"] * (ppm_Mg_17 / 537.4)
         w_ClO4_ML_ref += (dt_min / 30.0) * (w_ClO4_ML_ref_eq - w_ClO4_ML_ref)
+        w_Mg_ML_ref += (dt_min / 30.0) * (w_Mg_ML_ref_eq - w_Mg_ML_ref)
         ppm_superficial_ref = (moisture_17 * w_ClO4_lav_3000) * (1.0 - rem_eff_6000) * (w_ClO4_ML_ref / 738.0) ** 0.4
         ppm_ClO4_final_6000 = ppm_superficial_ref + 0.80 * coprecip_ppm
+        ppm_Mg_final_6000 = ppm_Mg_17 * (1.0 - rem_eff_6000) * (w_Mg_ML_ref / 2397.0) ** 0.4
 
         hist.append({
             "t_min": t, "T1_C": T1, "T2_C": T2, "P_vac1_bar": P_vac1, "P_vac2_bar": P_vac2,
             "xS1": xS1, "xS2": xS2, "F_6_t_h": F_6, "F_11_t_h": F_11,
             "F_pre_t_h": F_pre, "w_ClO4_pre_ppm": w_ClO4_pre, "w_ClO4_1_ppm": w_ClO4_1,
+            "w_Mg_pre_ppm": w_Mg_pre, "w_Mg_1_ppm": w_Mg_1, "C_Mg_B3520_g_L": C_Mg_B3520,
             "dMass_A3110_t_h": F_1 - F_VAPOR_A3110 - F_PERDIDAS_A3110 - F_6,
             "dMass_A3210_t_h": F_6 - F_11, "L1": L1, "L2": L2, "M1_t": M1, "M2_t": M2,
             "L1_sp": pid_LIC1.sp, "L2_sp": pid_LIC2.sp,
             "R_eff": R_eff, "F_303_sp_t_h": F_303_sp, "F_303_actual_t_h": F_303_actual,
             "C_ClO4_B3520_g_L": C_ClO4_B3520, "alpha_purge_pct": 100.0 * alpha_purge,
             "d50_1_um": d50_1, "d50_2_um": d50_2, "sigma1": sigma1, "sigma2": sigma2,
-            "level1_pct": LEVEL["level_sp_pct"] * L1, "level2_pct": LEVEL["level_sp_pct"] * L2, "ppm_ClO4_crudo_17": ppm_ClO4_17,
-            "ppm_ClO4_final_6000": ppm_ClO4_final_6000,
+            "level1_pct": LEVEL["level_sp_pct"] * L1, "level2_pct": LEVEL["level_sp_pct"] * L2,
+            "ppm_ClO4_crudo_17": ppm_ClO4_17, "ppm_ClO4_final_6000": ppm_ClO4_final_6000,
+            "ppm_Mg_crudo_17": ppm_Mg_17, "ppm_Mg_final_6000": ppm_Mg_final_6000,
         })
     return pd.DataFrame(hist)
 
 # === FUNCIONES CENTRALIZADAS: MAGNESIO (Mg2+), RECIRCULACIÓN B3520, FLUJO ÓPTIMO Y ROBUSTEZ ===
-
-def simular_recirculacion_y_magnesio(
-    modo_reciclo="sin_reciclo_actual",  # "sin_reciclo_actual", "reciclo_fijo", "reciclo_inteligente"
-    use_AIT3105=False,
-    hipotesis_mg="combinada",           # "salting_out", "cinetica_particion", "combinada"
-    duration_min=360.0,
-    dt_min=0.05,
-):
-    """Evalúa la recirculación B3520 -> A3110 y las 3 hipótesis de interacción Mg2+ / ClO4-."""
-    n_steps = int(duration_min / dt_min)
-    w_ClO4_pre, w_Mg_pre = 3714.1, 8500.0
-    T1, T2 = 55.0, 40.0
-    P_vac1, P_vac2 = VAC["P1_nom"], VAC["P2_nom"]
-    d50_2 = 185.0
-    C_ClO4_B3520, C_Mg_B3520 = 3.85, 9.20
-    w_ClO4_ML_ref = 738.0
-    F_303_actual = 27.14
-    M_KNO3 = 66.5 if modo_reciclo in ("sin_reciclo_actual", "no_recycle_actual") else 74.0
-
-    s_TIR1 = DelayedSensor(1.0, 0.5, dt_min, T1)
-    s_TIR2 = DelayedSensor(1.0, 0.5, dt_min, T2)
-    s_AIT3105 = DelayedSensor(10.0, 2.0, dt_min, w_ClO4_pre)
-    s_AIC3255 = DelayedSensor(10.0, 2.0, dt_min, C_ClO4_B3520)
-    s_FIRC3103 = DelayedSensor(0.10, 0.08, dt_min, F_303_actual)
-
-    pid_TIR1 = CommercialPID(0.0055 * VAC["Kc_scale1"], 9.0, 0.4, 55.0, VAC["P1_nom"], *VAC["P1_lim"])
-    pid_TIR2 = CommercialPID(0.0055 * VAC["Kc_scale2"], 9.0, 0.4, 40.0, VAC["P2_nom"], *VAC["P2_lim"])
-    pid_PIR1 = CommercialPID(1.5, 0.3, 0.0, VAC["P1_nom"], VAC["P1_nom"], *VAC["P1_lim"])
-    pid_PIR2 = CommercialPID(1.5, 0.3, 0.0, VAC["P2_nom"], VAC["P2_nom"], *VAC["P2_lim"])
-    pid_FIRC3103 = CommercialPID(1.25, 0.45, 0.0, 27.14, 27.14, 12.0, 42.0)
-    pid_AIC3255 = CommercialPID(-0.38, 22.0, 0.0, 3.95, 0.25, 0.12, 1.00)
-
-    hist = []
-    for k in range(n_steps):
-        t = k * dt_min
-        F_208, F_234 = 356.85, 21.33
-        w_ClO4_208 = 3892.0 + (550.0 if t >= 40.0 else 0.0)
-        w_Mg_208 = 8500.0 * (1.35 if t >= 140.0 else 1.0)
-
-        if modo_reciclo in ("sin_reciclo_actual", "no_recycle_actual"):
-            alpha_purge, F_rec_B3520 = 1.00, 0.0
-        elif modo_reciclo in ("reciclo_fijo", "fixed_recycle"):
-            alpha_purge = 0.25
-            F_rec_B3520 = 85.0 * (1.0 - alpha_purge)
-        else:
-            delta_Mg_sp = max((C_Mg_B3520 - 9.20) / 9.20, 0.0)
-            pid_AIC3255.sp = 3.95 - 0.55 * delta_Mg_sp
-            alpha_purge = pid_AIC3255.step(s_AIC3255.read(C_ClO4_B3520), dt_min)
-            F_rec_B3520 = 85.0 * (1.0 - alpha_purge)
-
-        F_pre = F_208 + F_234 + F_rec_B3520
-        w_ClO4_pre_eq = (F_208 * w_ClO4_208 + F_234 * w_ClO4_ML_ref + F_rec_B3520 * (C_ClO4_B3520 * 820.0)) / F_pre
-        w_Mg_pre_eq = (F_208 * w_Mg_208 + F_rec_B3520 * (C_Mg_B3520 * 820.0)) / F_pre
-        w_ClO4_pre += (dt_min / 8.0) * (w_ClO4_pre_eq - w_ClO4_pre)
-        w_Mg_pre += (dt_min / 8.0) * (w_Mg_pre_eq - w_Mg_pre)
-
-        R_0 = R_0_NOM
-        if use_AIT3105:
-            ait_pv = s_AIT3105.read(w_ClO4_pre)
-            delta_Mg_trim = max((w_Mg_pre - 8500.0) / 8500.0, 0.0)
-            R_eff = R_0 + K_TRIM_AIT * (ait_pv - 3714.1) + 0.018 * delta_Mg_trim
-        else:
-            R_eff = R_0
-
-        F_303_sp = np.clip(F_pre * R_eff, 12.0, 42.0)
-        pid_FIRC3103.sp = F_303_sp
-        v_cmd = pid_FIRC3103.step(s_FIRC3103.read(F_303_actual), dt_min)
-        F_303_actual += (dt_min / 0.133) * (v_cmd - F_303_actual)
-
-        F_1 = F_pre + F_303_actual
-        w_ClO4_1 = (F_pre * w_ClO4_pre + F_303_actual * 36.0) / F_1
-        w_Mg_1 = (F_pre * w_Mg_pre) / F_1
-
-        pid_PIR1.sp = pid_TIR1.step(s_TIR1.read(T1), dt_min)
-        pid_PIR2.sp = pid_TIR2.step(s_TIR2.read(T2), dt_min)
-        P_vac1 += (dt_min / 0.25) * (pid_PIR1.step(P_vac1, dt_min) - P_vac1)
-        P_vac2 += (dt_min / 0.25) * (pid_PIR2.step(P_vac2, dt_min) - P_vac2)
-        T1 += (dt_min / 5.5) * (vac_T(P_vac1, 1) - T1)
-        T2 += (dt_min / 5.5) * (vac_T(P_vac2, 2) + 0.35 * (T1 - 55.0) - T2)
-
-        rec_factor = (1.0 / max(alpha_purge, 0.12)) ** 0.28
-        C_ClO4_eq = 3.85 * (w_ClO4_1 / 3468.0) ** 1.35 * rec_factor
-        C_Mg_eq = 9.20 * (w_Mg_1 / 7930.0) * rec_factor
-        C_ClO4_B3520 += (dt_min / 22.0) * (C_ClO4_eq - C_ClO4_B3520)
-        C_Mg_B3520 += (dt_min / 22.0) * (C_Mg_eq - C_Mg_B3520)
-
-        d_Mg = max((C_Mg_B3520 - 9.20) / 9.20, 0.0)
-        salting = 0.85 * d_Mg if hipotesis_mg in ("salting_out", "combinada", "combined") else 0.0
-        C_sat_eff = 4.50 - salting
-
-        keff_mult = (1.0 + 0.45 * d_Mg) if hipotesis_mg in ("cinetica_particion", "kinetic_partition", "combinada", "combined") else 1.0
-        d50_eq = 185.0 - (28.0 * d_Mg if hipotesis_mg in ("cinetica_particion", "kinetic_partition", "combinada", "combined") else 0.0)
-        d50_2 += (dt_min / 18.0) * (d50_eq - d50_2)
-
-        coprecip_ppm = max(C_ClO4_B3520 - C_sat_eff, 0.0) * 85.0
-        moisture_17 = 0.050 * (185.0 / max(d50_2, 90.0)) ** 0.65
-        w_ClO4_lav = 4070.0 * (C_ClO4_B3520 / 4.00) * keff_mult
-        ppm_17 = moisture_17 * w_ClO4_lav + coprecip_ppm
-
-        water_loss = 0.42 * max(F_303_actual - 27.14, 0.0)
-        M_KNO3 += (dt_min / 15.0) * (66.5 + 10.0 * (1.0 - alpha_purge) - water_loss - M_KNO3)
-
-        rem_eff = 1.0 - (1.0 - 0.899) * (185.0 / max(d50_2, 90.0)) ** 0.85
-        w_ClO4_ML_ref += (dt_min / 30.0) * (738.0 * (ppm_17 / 203.5) - w_ClO4_ML_ref)
-        ppm_final_6000 = (moisture_17 * w_ClO4_lav) * (1.0 - rem_eff) * (w_ClO4_ML_ref / 738.0) ** 0.4 + 0.80 * coprecip_ppm
-
-        hist.append({
-            "t_min": t,
-            "C_Mg_B3520": C_Mg_B3520, "C_Mg_B3520_g_L": C_Mg_B3520,
-            "C_ClO4_B3520": C_ClO4_B3520, "C_ClO4_B3520_g_L": C_ClO4_B3520,
-            "C_sat_eff": C_sat_eff, "C_sat_KClO4_eff": C_sat_eff,
-            "F_rec_t_h": F_rec_B3520, "alpha_purge_pct": 100.0 * alpha_purge,
-            "M_KNO3_t_h": M_KNO3, "ppm_ClO4_final_6000": ppm_final_6000,
-        })
-    return pd.DataFrame(hist)
-
-
-# Alias de compatibilidad por si alguna celda llama al nombre en inglés
-simulate_plant_npt3_mg_recycle = simular_recirculacion_y_magnesio
 
 
 def simular_planta_agua_dilucion_magnesio(
@@ -990,215 +927,6 @@ def simular_robustez_parametros(
         })
     return pd.DataFrame(hist)
 
-# === ACOPLAMIENTO INTEGRADO PLANTA NPT-3 CON DATOS REALES DE MG2+ Y CLO4- (ÁREAS 2000 - 3000 - 6000) ===
-from msmpr_core.control import DelayedSensor, CommercialPID
-import pandas as pd
-
-# Constantes conciliadas desde Balance_de_masa_segun_PFD_completo.xlsx, v6 y Base de datos.xlsx
-PFD_MG_CLO4 = {
-    "w_Mg_208_ppm": 10206.0,      # Corriente 208 SSK (0.010206 total; 10858 ppm líquido)
-    "w_ClO4_208_ppm": 3892.0,     # Corriente 208 SSK (0.003892 total; 4140 ppm líquido)
-    "w_Mg_234_ppm": 2397.0,       # Corriente 234 ML Refinación (0.002397 total; 5.77 g/L BD)
-    "w_ClO4_234_ppm": 738.0,      # Corriente 234 ML Refinación (0.000738 total; 1.59 g/L BD)
-    "w_Mg_303_ppm": 329.0,        # Corriente 303 Agua dilución (0.000329)
-    "w_ClO4_303_ppm": 36.0,       # Corriente 303 Agua dilución (0.000036)
-    "w_Mg_pre_nom_ppm": (356.85 * 10206.0 + 21.33 * 2397.0) / 378.18,   # 9765.5 ppm antes de agua 303
-    "w_ClO4_pre_nom_ppm": (356.85 * 3892.0 + 21.33 * 738.0) / 378.18,   # 3714.1 ppm antes de agua 303
-    "w_Mg_1_nom_ppm": 9134.0,     # Corriente 1/334 SSK-d entrada A3110
-    "w_ClO4_1_nom_ppm": 3468.0,   # Corriente 1/334 SSK-d entrada A3110
-    "wL_Mg_A3110_ppm": 10767.0,   # Licor salida A3110 (corriente 6)
-    "wL_Mg_A3210_ppm": 11720.0,   # Licor salida A3210 / S3540 (corriente 11)
-    "wL_Mg_lav_3000_ppm": 10748.0,# Licor lavado S3550 (corrientes 15-24)
-    "wL_ClO4_lav_3000_ppm": 4070.0,# Licor lavado S3550 (corrientes 15-24)
-    "C_Mg_SSK_lab_g_L": 32.1115,  # Base de datos.xlsx hoja SSK (AQ SSKd 2026: 28.68 g/L)
-    "C_Mg_MLK_lab_g_L": 31.0317,  # Base de datos.xlsx hoja Purga-Recirculación (MLK)
-    "C_ClO4_MLK_lab_g_L": 3.5862, # Base de datos.xlsx hoja Purga-Recirculación (KClO4: 5.00 g/L)
-    "C_Mg_MLref_lab_g_L": 5.7698, # Base de datos.xlsx hoja ML Refi
-}
-
-
-def simulate_plant_npt3_calibrated(
-    use_AIT3105=True,
-    use_AIC3255=True,
-    tuning_mode="TL_damped",
-    duration_min=300.0,
-    dt_min=0.05,
-    theta_AIT_min=10.0,
-    density_cascade=False,
-):
-    """Simula el tren integrado Área 2000 (B2510) -> Área 3000 (A3110/A3210/B3520) -> Área 6000.
-
-    Integra las composiciones de Mg2+ y ClO4- de Balance_de_masa_segun_PFD_completo.xlsx, v6 y Base de datos.xlsx.
-    """
-    n_steps = int(duration_min / dt_min)
-    w_ClO4_pre = PFD_MG_CLO4["w_ClO4_pre_nom_ppm"]
-    w_Mg_pre = PFD_MG_CLO4["w_Mg_pre_nom_ppm"]
-    T1, T2 = 55.0, 40.0
-    v_T1, v_T2 = 0.0, 0.0
-    xS1, xS2 = 0.130, 0.200
-    D50_1N, D50_2N = GRANULO["D50_nom1_um"], GRANULO["D50_nom2_um"]
-    d50_1, d50_2 = D50_1N, D50_2N
-    d50_k1 = d50_k2 = 1.0
-    sigma1 = sigma2 = float("nan")
-    n_upd = max(int(round(GRANULO["update_every_min"] / dt_min)), 1)
-    C_ClO4_B3520 = 4.00
-    C_Mg_B3520 = PFD_MG_CLO4["C_Mg_MLK_lab_g_L"]
-    w_ClO4_ML_ref = PFD_MG_CLO4["w_ClO4_234_ppm"]
-    w_Mg_ML_ref = PFD_MG_CLO4["w_Mg_234_ppm"]
-    F_303_actual = F303_NOM
-
-    is_osc = tuning_mode == "ZN_oscillatory"
-    is_hopf = tuning_mode == "Hopf_limit_cycle"
-
-    sens_TIR3101 = DelayedSensor(1.20, 0.5, dt_min, T1)
-    sens_TIR3201 = DelayedSensor(1.20, 0.5, dt_min, T2)
-    sens_DIR3101 = DelayedSensor(0.80, 0.4, dt_min, xS1, resolution=0.0002)
-    sens_DIR3201 = DelayedSensor(0.80, 0.4, dt_min, xS2, resolution=0.0002)
-    sens_AIT3105 = DelayedSensor(theta_AIT_min, 2.0, dt_min, w_ClO4_pre)
-    sens_AIC3255 = DelayedSensor(10.0, 2.0, dt_min, C_ClO4_B3520)
-    sens_FIRC3103 = DelayedSensor(0.10, 0.08, dt_min, F_303_actual)
-
-    if is_hopf:
-        Kc_T, tauI_T, tauD_T = 0.0152, 3.2, 0.0
-        Kc_D, tauI_D = -2100.0, 8.5
-    elif is_osc:
-        Kc_T, tauI_T, tauD_T = 0.0095, 3.8, 0.25
-        Kc_D, tauI_D = -1350.0, 11.0
-    else:
-        Kc_T, tauI_T, tauD_T = 0.0052, 9.5, 0.60
-        Kc_D, tauI_D = -650.0, 28.0
-
-    pid_TP1 = CommercialPID(Kc_T * VAC["Kc_scale1"], tauI_T, tauD_T, 55.0, VAC["P1_nom"], *VAC["P1_lim"])
-    pid_TP2 = CommercialPID(Kc_T * VAC["Kc_scale2"], tauI_T, tauD_T, 40.0, VAC["P2_nom"], *VAC["P2_lim"])
-    k_dens = LEVEL["Kc_dens"] * (Kc_D / -650.0)
-    M1_nom, M2_nom = LEVEL["tau1_h"] * LEVEL["F_nom"], LEVEL["tau2_h"] * LEVEL["F_nom"]
-    M1, M2 = M1_nom, M2_nom
-    L1, L2 = 1.0, 1.0
-    pid_DIR1 = CommercialPID(k_dens, tauI_D, 0.0, 0.130, 1.0, *LEVEL["L_sp_lim"])
-    pid_DIR2 = CommercialPID(k_dens, tauI_D, 0.0, 0.200, 1.0, *LEVEL["L_sp_lim"])
-    kc_L1 = -60.0 * M1_nom / LEVEL["tauc_min"]
-    kc_L2 = -60.0 * M2_nom / LEVEL["tauc_min"]
-    ti_L = LEVEL["tauI_factor"] * LEVEL["tauc_min"]
-    pid_LIC1 = CommercialPID(kc_L1, ti_L, 0.0, 1.0, LEVEL["F_nom"], 250.0, 520.0)
-    pid_LIC2 = CommercialPID(kc_L2, ti_L, 0.0, 1.0, LEVEL["F_nom"], 250.0, 520.0)
-    sens_LIC1 = DelayedSensor(0.20, 0.20, dt_min, 1.0)
-    sens_LIC2 = DelayedSensor(0.20, 0.20, dt_min, 1.0)
-    pid_AIC3255 = CommercialPID(-0.48 if is_osc else -0.28, 18.0 if is_osc else 45.0, 0.0, 4.00, 0.22, 0.08, 0.65)
-    pid_FIRC3103 = CommercialPID(Kc=1.25, tau_I=0.45, tau_D=0.0, sp=27.14, u_bias=27.14, u_min=12.0, u_max=42.0)
-
-    hist = []
-    for k in range(n_steps):
-        t = k * dt_min
-        F_208 = 356.85 * (1.08 if 25.0 <= t < 140.0 else 1.0)
-        T_in_1 = 70.0 + (3.5 if t >= 25.0 else 0.0)
-        w_ClO4_208 = PFD_MG_CLO4["w_ClO4_208_ppm"] + (650.0 if t >= 80.0 else 0.0)
-        w_Mg_208 = PFD_MG_CLO4["w_Mg_208_ppm"]
-        F_234 = 21.33
-        F_pre = F_208 + F_234
-
-        w_ClO4_pre_target = (F_208 * w_ClO4_208 + F_234 * w_ClO4_ML_ref) / F_pre
-        w_Mg_pre_target = (F_208 * w_Mg_208 + F_234 * w_Mg_ML_ref) / F_pre
-        w_ClO4_pre += (dt_min / 8.0) * (w_ClO4_pre_target - w_ClO4_pre)
-        w_Mg_pre += (dt_min / 8.0) * (w_Mg_pre_target - w_Mg_pre)
-
-        R_0 = R_0_NOM
-        if use_AIT3105:
-            ait3105_pv = sens_AIT3105.read(w_ClO4_pre)
-            R_eff = R_0 + K_TRIM_AIT * (ait3105_pv - PFD_MG_CLO4["w_ClO4_pre_nom_ppm"])
-        else:
-            R_eff = R_0
-
-        F_303_sp = np.clip(F_pre * R_eff, 12.0, 42.0)
-        pid_FIRC3103.sp = F_303_sp
-        valve_cmd = pid_FIRC3103.step(sens_FIRC3103.read(F_303_actual), dt_min)
-        F_303_actual += (dt_min / 0.133) * (valve_cmd - F_303_actual)
-
-        F_1 = F_pre + F_303_actual
-        w_ClO4_1 = (F_pre * w_ClO4_pre + F_303_actual * PFD_MG_CLO4["w_ClO4_303_ppm"]) / F_1
-        w_Mg_1 = (F_pre * w_Mg_pre + F_303_actual * PFD_MG_CLO4["w_Mg_303_ppm"]) / F_1
-
-        P_vac1 = pid_TP1.step(sens_TIR3101.read(T1), dt_min)
-        P_vac2 = pid_TP2.step(sens_TIR3201.read(T2), dt_min)
-        if density_cascade:
-            pid_LIC1.sp = pid_DIR1.step(sens_DIR3101.read(xS1), dt_min)
-            pid_LIC2.sp = pid_DIR2.step(sens_DIR3201.read(xS2), dt_min)
-        F_6 = pid_LIC1.step(sens_LIC1.read(L1), dt_min)
-        F_11 = pid_LIC2.step(sens_LIC2.read(L2), dt_min)
-        M1 += (F_1 - F_VAPOR_A3110 - F_PERDIDAS_A3110 - F_6) * dt_min / 60.0
-        M2 += (F_6 - F_11) * dt_min / 60.0
-        L1, L2 = M1 / M1_nom, M2 / M2_nom
-        alpha_purge = pid_AIC3255.step(sens_AIC3255.read(C_ClO4_B3520), dt_min) if use_AIC3255 else 0.22
-
-        T1_eq = vac_T(P_vac1, 1) + 0.45 * (T_in_1 - 70.0)
-        T2_eq = vac_T(P_vac2, 2) + 0.40 * (T1 - 55.0) + (1.1 if t >= 25.0 else 0.0)
-        tau1_T, tau2_T = 4.5, 1.8
-        v_T1 += ((T1_eq - T1 - (tau1_T + tau2_T) * v_T1) / (tau1_T * tau2_T)) * dt_min
-        v_T2 += ((T2_eq - T2 - (tau1_T + tau2_T) * v_T2) / (tau1_T * tau2_T)) * dt_min
-        T1 += v_T1 * dt_min
-        T2 += v_T2 * dt_min
-
-        dil_effect = -0.0004 * (F_303_actual - 27.14)
-        xS1_eq = 0.130 - 4.5e-4 * (F_6 - 390.23) - 0.003 * (T1 - 55.0) + dil_effect + (0.009 if t >= 25.0 else 0.0)
-        xS1_eq += LEVEL["xS_level_gain"] * 0.130 * (L1 - 1.0)
-        xS2_eq = 0.200 + 0.75 * (xS1 - 0.130) - 4.5e-4 * (F_11 - 390.23) - 0.0035 * (T2 - 40.0) + (0.008 if t >= 25.0 else 0.0)
-        xS2_eq += LEVEL["xS_level_gain"] * 0.200 * (L2 - 1.0)
-        xS1 += (dt_min / 9.0) * (xS1_eq - xS1)
-        xS2 += (dt_min / 9.0) * (xS2_eq - xS2)
-
-        if k % n_upd == 0:
-            try:
-                r1n, r2n, _, _ = _ref_nominal()
-                m1, m2, sigma1, sigma2 = _cadena_d50(T1, T2, M1 / max(F_6, 1.0), M2 / max(F_11, 1.0), F_pre, F_303_actual)
-                if m1 > 0.0 and m2 > 0.0:
-                    d50_k1, d50_k2 = m1 / r1n, m2 / r2n
-            except (ValueError, RuntimeError):
-                pass
-        s2 = D50_2N / 185.0
-        d50_1_eq = D50_1N * d50_k1
-        d50_2_eq = D50_2N * d50_k2 + s2 * (180.0 * (xS2 - 0.200) + 0.35 * (390.23 - F_11))
-        d50_1 += (dt_min / GRANULO["tau_d50_min"]) * (d50_1_eq - d50_1)
-        d50_2 += (dt_min / GRANULO["tau_d50_min"]) * (d50_2_eq - d50_2)
-        d50_floor = GRANULO["d50_floor_frac"] * D50_2N
-
-        C_ClO4_in_eq = 4.00 * (w_ClO4_1 / 3468.0) ** 1.45 * (0.22 / max(alpha_purge, 0.05)) ** 0.50
-        C_Mg_in_eq = PFD_MG_CLO4["C_Mg_MLK_lab_g_L"] * (w_Mg_1 / 9134.0) * (0.22 / max(alpha_purge, 0.05)) ** 0.35
-        C_ClO4_B3520 += (dt_min / 24.0) * (C_ClO4_in_eq - C_ClO4_B3520)
-        C_Mg_B3520 += (dt_min / 24.0) * (C_Mg_in_eq - C_Mg_B3520)
-
-        coprecip_ppm = max(C_ClO4_B3520 - 4.50, 0.0) * 82.0
-        moisture_17 = 0.050 * (D50_2N / max(d50_2, d50_floor)) ** 0.65
-        w_ClO4_lav_3000 = PFD_MG_CLO4["wL_ClO4_lav_3000_ppm"] * (C_ClO4_B3520 / 4.00)
-        w_Mg_lav_3000 = PFD_MG_CLO4["wL_Mg_lav_3000_ppm"] * (C_Mg_B3520 / PFD_MG_CLO4["C_Mg_MLK_lab_g_L"])
-        ppm_ClO4_17 = moisture_17 * w_ClO4_lav_3000 + coprecip_ppm
-        ppm_Mg_17 = moisture_17 * w_Mg_lav_3000
-
-        rem_eff_6000 = 1.0 - (1.0 - 0.899) * (D50_2N / max(d50_2, d50_floor)) ** 0.85
-        w_ClO4_ML_ref_eq = PFD_MG_CLO4["w_ClO4_234_ppm"] * (ppm_ClO4_17 / 203.5)
-        w_Mg_ML_ref_eq = PFD_MG_CLO4["w_Mg_234_ppm"] * (ppm_Mg_17 / 537.4)
-        w_ClO4_ML_ref += (dt_min / 30.0) * (w_ClO4_ML_ref_eq - w_ClO4_ML_ref)
-        w_Mg_ML_ref += (dt_min / 30.0) * (w_Mg_ML_ref_eq - w_Mg_ML_ref)
-        ppm_superficial_ref = (moisture_17 * w_ClO4_lav_3000) * (1.0 - rem_eff_6000) * (w_ClO4_ML_ref / 738.0) ** 0.4
-        ppm_ClO4_final_6000 = ppm_superficial_ref + 0.80 * coprecip_ppm
-        ppm_Mg_final_6000 = ppm_Mg_17 * (1.0 - rem_eff_6000) * (w_Mg_ML_ref / 2397.0) ** 0.4
-
-        hist.append({
-            "t_min": t, "T1_C": T1, "T2_C": T2, "P_vac1_bar": P_vac1, "P_vac2_bar": P_vac2,
-            "xS1": xS1, "xS2": xS2, "F_6_t_h": F_6, "F_11_t_h": F_11,
-            "F_pre_t_h": F_pre, "w_ClO4_pre_ppm": w_ClO4_pre, "w_ClO4_1_ppm": w_ClO4_1,
-            "w_Mg_pre_ppm": w_Mg_pre, "w_Mg_1_ppm": w_Mg_1, "C_Mg_B3520_g_L": C_Mg_B3520,
-            "dMass_A3110_t_h": F_1 - F_VAPOR_A3110 - F_PERDIDAS_A3110 - F_6,
-            "dMass_A3210_t_h": F_6 - F_11, "L1": L1, "L2": L2, "M1_t": M1, "M2_t": M2,
-            "L1_sp": pid_LIC1.sp, "L2_sp": pid_LIC2.sp,
-            "R_eff": R_eff, "F_303_sp_t_h": F_303_sp, "F_303_actual_t_h": F_303_actual,
-            "C_ClO4_B3520_g_L": C_ClO4_B3520, "alpha_purge_pct": 100.0 * alpha_purge,
-            "d50_1_um": d50_1, "d50_2_um": d50_2, "sigma1": sigma1, "sigma2": sigma2,
-            "level1_pct": LEVEL["level_sp_pct"] * L1, "level2_pct": LEVEL["level_sp_pct"] * L2,
-            "ppm_ClO4_crudo_17": ppm_ClO4_17, "ppm_ClO4_final_6000": ppm_ClO4_final_6000,
-            "ppm_Mg_crudo_17": ppm_Mg_17, "ppm_Mg_final_6000": ppm_Mg_final_6000,
-        })
-    return pd.DataFrame(hist)
-
-
 def simular_recirculacion_y_magnesio(
     modo_reciclo="sin_reciclo_actual",  # "sin_reciclo_actual", "reciclo_fijo", "reciclo_inteligente"
     use_AIT3105=False,
@@ -1328,3 +1056,57 @@ def simular_recirculacion_y_magnesio(
 
 
 simulate_plant_npt3_mg_recycle = simular_recirculacion_y_magnesio
+
+# ---------------------------------------------------------------------------------------------
+# Identificacion de la ganancia ultima sobre la simulacion
+def _hp(x, dt_min, win_min=15.0):
+    k = max(int(win_min / dt_min), 1) | 1               # ventana impar
+    xp = np.pad(np.asarray(x, float), k // 2, mode="edge")   # sin ceros en los bordes (evita falsos picos al inicio/final)
+    return x - np.convolve(xp, np.ones(k) / k, mode="valid")
+
+
+def amplitud_oscilacion(df, t0, t1, col="T2_C", win_min=15.0):
+    """Desviacion estandar de la componente oscilatoria (sin tendencia lenta) de `col` entre t0 y t1 [min]."""
+    dt = float(df.t_min.iloc[1] - df.t_min.iloc[0])
+    m = ((df.t_min > t0) & (df.t_min < t1)).values
+    return float(np.std(_hp(df[col].values, dt, win_min)[m]))
+
+
+def razon_decaimiento(df, col="T2_C", t0=25.0, t1=260.0, umbral=0.02):
+    """Razon de decaimiento = (2do pico)/(1er pico) de la oscilacion de `col` tras la perturbacion. nan si hay < 2 picos."""
+    dt = float(df.t_min.iloc[1] - df.t_min.iloc[0])
+    y = _hp(df[col].values, dt)
+    t = df.t_min.values
+    m = (t > t0) & (t < t1)
+    yy = y[m]
+    pk = [i for i in range(1, len(yy) - 1) if yy[i] > yy[i - 1] and yy[i] >= yy[i + 1] and yy[i] > umbral]
+    return float(yy[pk[1]] / yy[pk[0]]) if len(pk) >= 2 else float("nan")
+
+
+def _sim_P(Kc, **kw):
+    return simulate_plant_npt3_calibrated(Kc_T_override=Kc, tauI_T_override=1e6, tauD_T_override=0.0,
+                                          vac_limits_override=(-2.0, 0.0), duration_min=420.0, **kw)
+
+
+def identificar_Kcu(lo=0.012, hi=0.013, n_iter=9):
+    """Ganancia ultima Kcu [bar/C] y periodo Pu [min] del lazo de T sobre simulate_plant_npt3_calibrated.
+
+    Accion P pura (tauI muy grande), valvula sin saturar. Kcu = menor Kc con que la oscilacion de T2 no decae
+    (amplitud tardia / amplitud intermedia >= 1), por biseccion en [lo, hi] (el intervalo debe encerrar la transicion). Pu: promedio
+    del periodo entre cruces por cero a Kc = 1.03 Kcu.
+    """
+    def crece(Kc):
+        d = _sim_P(Kc)
+        return amplitud_oscilacion(d, 300, 400) / max(amplitud_oscilacion(d, 110, 170), 1e-9) >= 1.0
+    if crece(lo) or not crece(hi):
+        raise ValueError("el intervalo [lo, hi] no encierra la transicion estable -> inestable")
+    for _ in range(n_iter):
+        mid = 0.5 * (lo + hi)
+        lo, hi = (lo, mid) if crece(mid) else (mid, hi)
+    Kcu = 0.5 * (lo + hi)
+    d = _sim_P(1.03 * Kcu)
+    x = _hp(d.T2_C.values, float(d.t_min.iloc[1] - d.t_min.iloc[0]))
+    m = ((d.t_min > 250) & (d.t_min < 420)).values
+    xs, tt = x[m], d.t_min.values[m]
+    z = np.where((xs[:-1] < 0) & (xs[1:] >= 0))[0]
+    return Kcu, float(np.mean(np.diff(tt[z])))

@@ -92,3 +92,11 @@ Obliga a declarar equipo y origen, y a pasar volumen y alimentación (no vienen 
 - Corrige `KeyError: 'w_Mg_MLK_v6_ppm'` en `simular_recirculacion_y_magnesio` (faltaban `w_Mg_MLK_v6_ppm` y `w_ClO4_MLK_v6_ppm` en `PFD_MG_CLO4`).
 - Notebooks 04-06: la primera celda que importa `msmpr_core` fija la ruta y el directorio de trabajo (VS Code puede abrir el kernel en la raíz del repo); se agrega `display` de IPython; la celda de conciliación Mg/ClO4 del 06 queda ejecutable.
 - Pruebas: sin funciones duplicadas, claves de `PFD_MG_CLO4`, los tres modos de recirculación, columnas de Mg.
+
+## [v2.6.0] - Tope de agua, supervisor de T2 y análisis térmico
+- `plant.F303_MAX_AMBIENTAL = 36 t/h`: ninguna simulación pide más agua de dilución (antes topes de 42, 50 y 52 t/h). `F_303_target` por defecto ya no es 36,8.
+- Saturación de KClO4 dependiente de T (`sat_factor_T`, `c_sat_clo4_gL`): dato de SQM bajo 40 °C; sobre 40 °C razón del agua pura (**placeholder**).
+- Supervisor de T2 (`trim_T2`) en `simular_recirculacion_y_magnesio` y `simular_planta_agua_dilucion_magnesio`: sube la consigna de T2 lo mínimo para mantener el margen de saturación. Pérdida de KNO3: 1,82 t/h por °C (Entrega 2, Tabla 8).
+- Nuevas funciones: `comparar_estrategias_excursion`, `barrido_agua_optimo`, `analisis_temperatura`, `calor_enfriar_agua_dilucion_kW`; nuevos argumentos de análisis (`T_in_extra`, `T_agua_dilucion`, `ff_temperatura`, `T1_sp`, `T2_sp`, ...).
+- Arranque del reciclo inteligente sin recirculación (α = 1): elimina el pico espurio de ~67 ppm de los primeros 20 min.
+- Notebook 06: B6 recalculada con 4 estrategias (la propuesta cumple; las demás no, con veredicto calculado); B7 óptimo de agua; B8 análisis de temperatura; tablas sin veredictos escritos a mano ni el ajuste `+ 5.8` de KNO3; Pareto sintético reemplazado por simulaciones. Se eliminan las figuras PPT_Fig5/6 antiguas (curvas escritas a mano).

@@ -46,6 +46,11 @@ VAC = {
 KCU_SIM = {"Kcu_bar_C": 0.012407, "Pu_min": 9.70}
 K_TRIM_AIT = 5.2e-5          # [1/ppm] razón extra de dilución por ppm de ClO4 sobre 3714.1 (placeholder; decisión económica)
 F303_NOM, F_PRE_NOM = 27.14, 378.18
+# Tope AMBIENTAL del agua de dilucion F_303 [t/h]: ninguna estrategia puede pedir mas (valvula FV 3103 y consigna FIRC 3103).
+# Decision de proyecto: el agua es un recurso escaso para la comunidad; se busca el MINIMO que cumple la norma, nunca por sobre este tope.
+F303_MAX_AMBIENTAL = 36.0
+# KNO3 cristalizado por grado de enfriamiento en A3210 [t/h/C] = 27.26 t/h / 15 C (Entrega 2, Tabla 8): cada C de T2 por sobre 40 C pierde esa produccion.
+KNO3_PERDIDA_T_t_h_por_C = 27.26 / 15.0
 R_0_NOM = F303_NOM / F_PRE_NOM          # 0.07176: razón dilución / alimentación previa (no es feed_dilution_fraction)
 F_VAPOR_A3110, F_PERDIDAS_A3110 = 10.03, 5.06   # t/h, balance de masa detallado
 # Lazo de nivel (LIRCSAHL 3101 / 3201): inventario M [t] = tau * F nominal; nivel normalizado L = M / M_nom (SP = 1).
@@ -336,6 +341,30 @@ PFD_MG_CLO4 = {
 
 
 
+# Solubilidad de KClO4 en funcion de la temperatura, expresada como ClO4- disuelto [g/L] (KClO4 [g/L] / 1.393).
+# T <= 40 C: ensayo de SQM con SSKd (Mg 27.1 g/L, KClO4 5.7 g/L), Informaciones_Varias.docx: 25 C 3.48, 30 C 3.90, 35 C 4.59, 40 C 6.54 g/L KClO4
+#   (el punto de inflexion experimental esta en ~40 C; bajo esa T la concentracion disuelta cae por precipitacion de KClO4).
+# T > 40 C: NO hay dato de SQM. Se usa la razon S(T)/S(40) de la solubilidad de KClO4 en AGUA PURA (valores de referencia tipo CRC Handbook,
+#   g/100 g agua: 40 C 3.73; 50 C 5.44; 60 C 7.3; 70 C 10.3; 80 C 13.4) -> PLACEHOLDER hasta medir la curva en salmuera real.
+KCLO4_SOL_EXP = {25.0: 3.48 / 1.393, 30.0: 3.90 / 1.393, 35.0: 4.59 / 1.393, 40.0: 6.54 / 1.393}
+KCLO4_SOL_AGUA_REF = {40.0: 3.73, 50.0: 5.44, 60.0: 7.3, 70.0: 10.3, 80.0: 13.4}
+C_SAT_NOM_ClO4 = 4.50       # g/L de ClO4- (equivale a ~6.3 g/L de KClO4) a 40 C sin efecto de Mg: valor historico del modelo
+
+
+def sat_factor_T(T_C):
+    """Razon S(T)/S(40 C) de la solubilidad de KClO4: tabla experimental bajo 40 C; razon de agua pura sobre 40 C (placeholder)."""
+    if T_C <= 40.0:
+        xs = sorted(KCLO4_SOL_EXP)
+        return float(np.interp(T_C, xs, [KCLO4_SOL_EXP[x] for x in xs])) / KCLO4_SOL_EXP[40.0]
+    xs = sorted(KCLO4_SOL_AGUA_REF)
+    return float(np.interp(T_C, xs, [KCLO4_SOL_AGUA_REF[x] for x in xs])) / KCLO4_SOL_AGUA_REF[40.0]
+
+
+def c_sat_clo4_gL(T_C, d_Mg=0.0, salting_coef=0.85):
+    """ClO4- disuelto de saturacion de KClO4 [g/L] a T_C, con salting-out por Mg (d_Mg = fraccion sobre el nominal)."""
+    return C_SAT_NOM_ClO4 * sat_factor_T(T_C) - salting_coef * d_Mg
+
+
 
 def simulate_plant_npt3_calibrated(
     use_AIT3105=True,
@@ -418,7 +447,7 @@ def simulate_plant_npt3_calibrated(
     sens_LIC1 = DelayedSensor(0.20, 0.20, dt_min, 1.0)
     sens_LIC2 = DelayedSensor(0.20, 0.20, dt_min, 1.0)
     pid_AIC3255 = CommercialPID(-0.48 if is_osc else -0.28, 18.0 if is_osc else 45.0, 0.0, 4.00, 0.22, 0.08, 0.65)
-    pid_FIRC3103 = CommercialPID(Kc=1.25, tau_I=0.45, tau_D=0.0, sp=27.14, u_bias=27.14, u_min=12.0, u_max=42.0)
+    pid_FIRC3103 = CommercialPID(Kc=1.25, tau_I=0.45, tau_D=0.0, sp=27.14, u_bias=27.14, u_min=12.0, u_max=F303_MAX_AMBIENTAL)
 
     hist = []
     for k in range(n_steps):
@@ -442,10 +471,11 @@ def simulate_plant_npt3_calibrated(
         else:
             R_eff = R_0
 
-        F_303_sp = np.clip(F_pre * R_eff, 12.0, 42.0)
+        F_303_sp = np.clip(F_pre * R_eff, 12.0, F303_MAX_AMBIENTAL)
         pid_FIRC3103.sp = F_303_sp
         valve_cmd = pid_FIRC3103.step(sens_FIRC3103.read(F_303_actual), dt_min)
         F_303_actual += (dt_min / 0.133) * (valve_cmd - F_303_actual)
+        F_303_actual = min(F_303_actual, F303_MAX_AMBIENTAL)   # la valvula FV 3103 no puede entregar mas que el tope
 
         F_1 = F_pre + F_303_actual
         w_ClO4_1 = (F_pre * w_ClO4_pre + F_303_actual * PFD_MG_CLO4["w_ClO4_303_ppm"]) / F_1
@@ -542,6 +572,9 @@ def simular_planta_agua_dilucion_magnesio(
     theta_AIT_min=10.0,
     duration_min=360.0,
     dt_min=0.05,
+    trim_T2=False,       # supervisor: sube T2_sp (minimo necesario) si ClO4/C_sat supera margen_sat (+solubilidad de KClO4, -KNO3)
+    margen_sat=0.93,
+    dT2_max=4.0,
 ):
     """Simula el aporte del agua de dilución (F_303) y trim de Mg2+ bajo ruido coloreado de Ornstein-Uhlenbeck."""
     n_steps = int(duration_min / dt_min)
@@ -566,6 +599,7 @@ def simular_planta_agua_dilucion_magnesio(
     C_ClO4_A3210, C_Mg_A3210 = 3.95, 8.95
     C_ClO4_B3520, C_Mg_B3520 = 4.00, 9.10
     T1, T2 = 55.0, 40.0
+    dT2_trim = 0.0
     P_vac1, P_vac2 = VAC["P1_nom"], VAC["P2_nom"]
     xS1, xS2 = 0.130, 0.200
     d50_1, d50_2 = 145.0, 185.0
@@ -589,7 +623,7 @@ def simular_planta_agua_dilucion_magnesio(
     pid_PIR2 = CommercialPID(1.5, 0.3, 0.0, VAC["P2_nom"], VAC["P2_nom"], *VAC["P2_lim"])
     pid_DIR1 = CommercialPID(-650.0, 28.0, 0.0, 0.130, 390.23, 250.0, 520.0)
     pid_DIR2 = CommercialPID(-650.0, 28.0, 0.0, 0.200, 390.23, 250.0, 520.0)
-    pid_FIRC3103 = CommercialPID(1.30, 0.40, 0.0, 27.14, 27.14, 12.0, 50.0)
+    pid_FIRC3103 = CommercialPID(1.30, 0.40, 0.0, 27.14, 27.14, 12.0, F303_MAX_AMBIENTAL)
     pid_AIC3255 = CommercialPID(-0.42, 20.0, 0.0, 3.92, 0.25, 0.12, 1.00)
 
     R_0 = R_0_NOM
@@ -632,16 +666,18 @@ def simular_planta_agua_dilucion_magnesio(
             d_mg_in = max((ait_mg_pv - 8200.0) / 8200.0, 0.0)
             R_eff = R_0 + K_TRIM_AIT * max(ait_cl_pv - 3714.1, 0.0) + 0.065 * d_mg_in
 
-        F_303_sp = np.clip(F_pre * R_eff, 12.0, 50.0)
+        F_303_sp = np.clip(F_pre * R_eff, 12.0, F303_MAX_AMBIENTAL)
         pid_FIRC3103.sp = F_303_sp
         v_cmd = pid_FIRC3103.step(s_FIRC3103.read(F_303_actual), dt_min)
         F_303_actual += (dt_min / 0.133) * (valve_gain * v_cmd - F_303_actual)
+        F_303_actual = min(F_303_actual, F303_MAX_AMBIENTAL)   # la valvula FV 3103 no puede entregar mas que el tope
 
         F_1 = F_pre + F_303_actual
         w_ClO4_1 = (F_pre * w_ClO4_pre + F_303_actual * 36.0) / F_1
         w_Mg_1 = (F_pre * w_Mg_pre + F_303_actual * 10.0) / F_1
 
         pid_PIR1.sp = pid_TIR1.step(s_TIR1.read(T1), dt_min)
+        pid_TIR2.sp = 40.0 + dT2_trim
         pid_PIR2.sp = pid_TIR2.step(s_TIR2.read(T2), dt_min)
         P_vac1 += (dt_min / 0.25) * (pid_PIR1.step(P_vac1, dt_min) - P_vac1)
         P_vac2 += (dt_min / 0.25) * (pid_PIR2.step(P_vac2, dt_min) - P_vac2)
@@ -665,7 +701,10 @@ def simular_planta_agua_dilucion_magnesio(
 
         d_Mg_proc = max((C_Mg_A3210 - 8.95) / 8.95, 0.0)
         water_added = max(F_303_actual - 27.14, 0.0)
-        C_sat_KClO4_40C = 4.38 - 1.15 * d_Mg_proc + 0.042 * water_added
+        C_sat_KClO4_40C = (4.38 - 1.15 * d_Mg_proc + 0.042 * water_added) * sat_factor_T(T2)   # satura a la T real de A3210
+        if trim_T2:
+            exceso = C_ClO4_B3520 / max(C_sat_KClO4_40C, 1e-6) - margen_sat
+            dT2_trim += (dt_min / 10.0) * (float(np.clip(exceso * 60.0, 0.0, dT2_max)) - dT2_trim)
 
         d50_1 += (dt_min / 14.0) * (145.0 - 25.0 * max((C_Mg_A3110 - 8.10) / 8.10, 0.0) + 0.55 * water_added - d50_1)
         d50_2 += (dt_min / 16.0) * (185.0 * (d50_1 / 145.0) - 28.0 * d_Mg_proc + 0.65 * water_added - d50_2)
@@ -677,7 +716,7 @@ def simular_planta_agua_dilucion_magnesio(
         ppm_ClO4_17 = moisture_17 * w_ClO4_lav_3000 + coprecip_ppm
 
         excess_water = max(F_303_actual - (F_pre * R_0), 0.0)
-        M_KNO3_eq = (67.5 + 8.8 * (1.0 - alpha_purge)) * (F_208 / 356.85) - 0.36 * excess_water
+        M_KNO3_eq = (67.5 + 8.8 * (1.0 - alpha_purge)) * (F_208 / 356.85) - 0.36 * excess_water - KNO3_PERDIDA_T_t_h_por_C * max(T2 - 40.0, 0.0)
         M_KNO3_prod += (dt_min / 15.0) * (M_KNO3_eq - M_KNO3_prod)
 
         rem_eff_6000 = 1.0 - (1.0 - 0.899) * (185.0 / max(d50_2, 100.0)) ** 0.85
@@ -688,20 +727,20 @@ def simular_planta_agua_dilucion_magnesio(
             "t_min": t, "F_303": F_303_actual, "w_Mg_1": w_Mg_1,
             "C_Mg_A3110": C_Mg_A3110, "C_Mg_A3210": C_Mg_A3210, "C_Mg_B3520": C_Mg_B3520,
             "C_ClO4_B3520": C_ClO4_B3520, "C_sat_KClO4_40C": C_sat_KClO4_40C, "d50_2": d50_2,
-            "M_KNO3_t_h": M_KNO3_prod, "ppm_ClO4_final_6000": ppm_final_6000,
+            "M_KNO3_t_h": M_KNO3_prod, "dT2_trim_C": dT2_trim, "T2_C": T2, "ppm_ClO4_final_6000": ppm_final_6000,
         })
     return pd.DataFrame(hist)
 
 
 def simular_AIT_AIC_por_flujo_agua(
-    F_303_target=36.8,
+    F_303_target=F303_MAX_AMBIENTAL,
     modo_control="AIT_and_AIC",
     delta_ClO4_ssk=650.0,
     include_noise=True,
     duration_min=320.0,
     dt_min=0.05,
 ):
-    """Evalúa los lazos AIT 3105 y AIC 3255 en función del flujo objetivo de agua F_303 (óptimo 36.8 t/h)."""
+    """Evalúa los lazos AIT 3105 y AIC 3255 en función del flujo objetivo de agua F_303 (el flujo se limita a F303_MAX_AMBIENTAL)."""
     n_steps = int(duration_min / dt_min)
     rng = np.random.default_rng(105)
     phi = np.exp(-dt_min / 8.0)
@@ -734,7 +773,7 @@ def simular_AIT_AIC_por_flujo_agua(
     s_AIC3255 = DelayedSensor(10.0, 2.0, dt_min, C_ClO4_B3520, noise_std=0.02 * ns, seed=22)
     s_FIRC3103 = DelayedSensor(0.10, 0.08, dt_min, F_303_actual, noise_std=0.12 * ns, seed=23)
 
-    pid_FIRC3103 = CommercialPID(1.30, 0.40, 0.0, 27.14, 27.14, 12.0, 52.0)
+    pid_FIRC3103 = CommercialPID(1.30, 0.40, 0.0, 27.14, 27.14, 12.0, F303_MAX_AMBIENTAL)
     pid_AIC3255 = CommercialPID(-0.35, 22.0, 0.0, 4.02, 0.25, 0.12, 0.80)
 
     hist = []
@@ -760,11 +799,12 @@ def simular_AIT_AIC_por_flujo_agua(
             F_303_sp = 27.14
         else:
             factor_ait = np.clip((ait_pv - 3714.1) / max(delta_ClO4_ssk * 0.72, 1.0), 0.0, 1.15)
-            F_303_sp = np.clip(27.14 + (F_303_target - 27.14) * factor_ait, 12.0, 52.0)
+            F_303_sp = np.clip(27.14 + (F_303_target - 27.14) * factor_ait, 12.0, F303_MAX_AMBIENTAL)
 
         pid_FIRC3103.sp = F_303_sp
         v_cmd = pid_FIRC3103.step(s_FIRC3103.read(F_303_actual), dt_min)
         F_303_actual += (dt_min / 0.133) * (v_cmd - F_303_actual)
+        F_303_actual = min(F_303_actual, F303_MAX_AMBIENTAL)   # la valvula FV 3103 no puede entregar mas que el tope
 
         F_1 = F_pre + F_303_actual
         w_ClO4_1 = (F_pre * w_ClO4_pre + F_303_actual * 36.0) / F_1
@@ -853,7 +893,7 @@ def simular_robustez_parametros(
     s_AIC3255 = DelayedSensor(10.0, 2.0, dt_min, C_ClO4_B3520, noise_std=0.018, seed=seed + 3)
     s_FIRC3103 = DelayedSensor(0.10, 0.08, dt_min, F_303_actual, noise_std=0.10, seed=seed + 4)
 
-    pid_FIRC3103 = CommercialPID(1.30, 0.40, 0.0, 27.14, 27.14, 12.0, 50.0)
+    pid_FIRC3103 = CommercialPID(1.30, 0.40, 0.0, 27.14, 27.14, 12.0, F303_MAX_AMBIENTAL)
     pid_AIC3255 = CommercialPID(-0.48, 16.0, 0.0, 4.00, 0.25, 0.12, 0.85)
     R_0 = R_0_NOM
 
@@ -882,13 +922,14 @@ def simular_robustez_parametros(
             d_mg_in = max((ait_mg_pv - 8400.0) / 8400.0, 0.0)
             aic_trim = 0.015 * max(aic_pv - 4.00, 0.0)
             R_eff = R_0 + K_TRIM_AIT * max(ait_pv - 3714.1, 0.0) + 0.055 * d_mg_in + aic_trim
-            F_303_sp = np.clip(F_pre * R_eff, 12.0, 50.0)
+            F_303_sp = np.clip(F_pre * R_eff, 12.0, F303_MAX_AMBIENTAL)
         else:
             F_303_sp = 27.14
 
         pid_FIRC3103.sp = F_303_sp
         v_cmd = pid_FIRC3103.step(s_FIRC3103.read(F_303_actual), dt_min)
         F_303_actual += (dt_min / 0.133) * (v_cmd - F_303_actual)
+        F_303_actual = min(F_303_actual, F303_MAX_AMBIENTAL)   # la valvula FV 3103 no puede entregar mas que el tope
 
         F_1 = F_pre + F_303_actual
         w_ClO4_1 = (F_pre * w_ClO4_pre + F_303_actual * 36.0) / F_1
@@ -933,12 +974,32 @@ def simular_recirculacion_y_magnesio(
     hipotesis_mg="combinada",           # "salting_out", "cinetica_particion", "combinada"
     duration_min=360.0,
     dt_min=0.05,
+    aic_sp0=3.95,            # consigna base de ClO4 en B3520 para AIC 3255 [g/L]
+    aic_gain_Mg=0.55,        # descenso de la consigna por fraccion de Mg sobre el nominal
+    k_trim=K_TRIM_AIT,       # trim de AIT 3105 sobre la razon de dilucion [1/ppm]
+    trim_Mg=0.018,           # trim por Mg sobre la razon de dilucion
+    F303_max=None,           # tope de agua de dilucion [t/h]; None = F303_MAX_AMBIENTAL
+    T_in_extra=0.0,          # sobretemperatura de la alimentacion previa a la dilucion [C] (escalon en t = 40 min)
+    T2_sp=40.0,              # consigna de temperatura del cristalizador 2 [C]
+    T1_sp=55.0,              # consigna de temperatura del cristalizador 1 [C]
+    T_agua_dilucion=60.0,    # temperatura del agua de dilucion F_303 [C] (60 C en el balance de masa)
+    ff_temperatura=False,    # prealimentacion: la consigna de vacio descuenta la sobretemperatura medida de la alimentacion
+    trim_T2=False,           # supervisor: sube T2_sp en la cantidad minima que mantiene el margen de saturacion de KClO4
+    margen_sat=0.93,         # relacion ClO4/C_sat a partir de la cual actua el supervisor de T2
+    dT2_max=4.0,             # maxima elevacion de T2_sp que puede pedir el supervisor [C]
 ):
-    """Evalúa la recirculación B3520 -> A3110 y las 3 hipótesis de interacción Mg2+ / ClO4- con datos PFD y Base de datos.xlsx."""
+    """Evalúa la recirculación B3520 -> A3110 y las 3 hipótesis de interacción Mg2+ / ClO4- con datos PFD y Base de datos.xlsx.
+
+    Nuevos argumentos de analisis: sintonia de AIC/AIT, tope de agua y temperaturas (alimentacion y consignas de cristalizadores).
+    """
+    F303_max = F303_MAX_AMBIENTAL if F303_max is None else min(F303_max, F303_MAX_AMBIENTAL)
     n_steps = int(duration_min / dt_min)
     w_ClO4_pre = PFD_MG_CLO4["w_ClO4_pre_nom_ppm"]
     w_Mg_pre = PFD_MG_CLO4["w_Mg_pre_nom_ppm"]
-    T1, T2 = 55.0, 40.0
+    T1, T2 = T1_sp, T2_sp
+    T2_sp_nom = T2_sp
+    dT2_trim = 0.0
+    T2_perdida_KNO3 = 0.0
     P_vac1, P_vac2 = VAC["P1_nom"], VAC["P2_nom"]
     d50_2 = 185.0
     C_ClO4_B3520 = 3.85
@@ -955,12 +1016,13 @@ def simular_recirculacion_y_magnesio(
     s_AIC3255 = DelayedSensor(10.0, 2.0, dt_min, C_ClO4_B3520)
     s_FIRC3103 = DelayedSensor(0.10, 0.08, dt_min, F_303_actual)
 
-    pid_TIR1 = CommercialPID(0.0055 * VAC["Kc_scale1"], 9.0, 0.4, 55.0, VAC["P1_nom"], *VAC["P1_lim"])
-    pid_TIR2 = CommercialPID(0.0055 * VAC["Kc_scale2"], 9.0, 0.4, 40.0, VAC["P2_nom"], *VAC["P2_lim"])
+    pid_TIR1 = CommercialPID(0.0055 * VAC["Kc_scale1"], 9.0, 0.4, T1_sp, VAC["P1_nom"], *VAC["P1_lim"])
+    pid_TIR2 = CommercialPID(0.0055 * VAC["Kc_scale2"], 9.0, 0.4, T2_sp, VAC["P2_nom"], *VAC["P2_lim"])
     pid_PIR1 = CommercialPID(1.5, 0.3, 0.0, VAC["P1_nom"], VAC["P1_nom"], *VAC["P1_lim"])
     pid_PIR2 = CommercialPID(1.5, 0.3, 0.0, VAC["P2_nom"], VAC["P2_nom"], *VAC["P2_lim"])
-    pid_FIRC3103 = CommercialPID(1.25, 0.45, 0.0, 27.14, 27.14, 12.0, 42.0)
-    pid_AIC3255 = CommercialPID(-0.38, 22.0, 0.0, 3.95, 0.25, 0.12, 1.00)
+    pid_FIRC3103 = CommercialPID(1.25, 0.45, 0.0, 27.14, 27.14, 12.0, F303_max)
+    # arranque SIN recirculacion (alpha = 1): la planta parte en regimen sin reciclo y AIC solo la abre cuando hay margen
+    pid_AIC3255 = CommercialPID(-0.38, 22.0, 0.0, aic_sp0, 1.00 if modo_reciclo in ("reciclo_inteligente", "smart_recycle") else 0.25, 0.12, 1.00)
 
     hist = []
     for k in range(n_steps):
@@ -977,7 +1039,7 @@ def simular_recirculacion_y_magnesio(
             F_rec_B3520 = 85.0 * (1.0 - alpha_purge)
         else:
             delta_Mg_sp = max((C_Mg_B3520 - 9.20) / 9.20, 0.0)
-            pid_AIC3255.sp = 3.95 - 0.55 * delta_Mg_sp
+            pid_AIC3255.sp = aic_sp0 - aic_gain_Mg * delta_Mg_sp
             alpha_purge = pid_AIC3255.step(s_AIC3255.read(C_ClO4_B3520), dt_min)
             F_rec_B3520 = 85.0 * (1.0 - alpha_purge)
 
@@ -993,25 +1055,37 @@ def simular_recirculacion_y_magnesio(
         if use_AIT3105:
             ait_pv = s_AIT3105.read(w_ClO4_pre)
             delta_Mg_trim = max((w_Mg_pre - PFD_MG_CLO4["w_Mg_pre_nom_ppm"]) / PFD_MG_CLO4["w_Mg_pre_nom_ppm"], 0.0)
-            R_eff = R_0 + K_TRIM_AIT * (ait_pv - PFD_MG_CLO4["w_ClO4_pre_nom_ppm"]) + 0.018 * delta_Mg_trim
+            R_eff = R_0 + k_trim * (ait_pv - PFD_MG_CLO4["w_ClO4_pre_nom_ppm"]) + trim_Mg * delta_Mg_trim
         else:
             R_eff = R_0
 
-        F_303_sp = np.clip(F_pre * R_eff, 12.0, 42.0)
+        F_303_sp = np.clip(F_pre * R_eff, 12.0, F303_max)
         pid_FIRC3103.sp = F_303_sp
         v_cmd = pid_FIRC3103.step(s_FIRC3103.read(F_303_actual), dt_min)
         F_303_actual += (dt_min / 0.133) * (v_cmd - F_303_actual)
+        F_303_actual = min(F_303_actual, F303_MAX_AMBIENTAL)   # la valvula FV 3103 no puede entregar mas que el tope
 
         F_1 = F_pre + F_303_actual
         w_ClO4_1 = (F_pre * w_ClO4_pre + F_303_actual * PFD_MG_CLO4["w_ClO4_303_ppm"]) / F_1
         w_Mg_1 = (F_pre * w_Mg_pre + F_303_actual * PFD_MG_CLO4["w_Mg_303_ppm"]) / F_1
 
+        dT_in = T_in_extra if t >= 40.0 else 0.0
+        dT_dil = -(F_303_actual / max(F_1, 1.0)) * (60.0 - T_agua_dilucion) * (4.172 / 2.180)
+        if ff_temperatura:   # prealimentacion: se corrige la consigna de T1 con la sobretemperatura medida (TIR 2501) y el agua fria
+            pid_TIR1.sp = T1_sp
+        pid_TIR2.sp = T2_sp_nom + dT2_trim
         pid_PIR1.sp = pid_TIR1.step(s_TIR1.read(T1), dt_min)
+        if ff_temperatura:
+            pid_PIR1.sp = float(np.clip(pid_PIR1.sp - (vac_P(T1_sp + 0.45 * (dT_in + dT_dil), 1) - vac_P(T1_sp, 1)), *VAC["P1_lim"]))
         pid_PIR2.sp = pid_TIR2.step(s_TIR2.read(T2), dt_min)
         P_vac1 += (dt_min / 0.25) * (pid_PIR1.step(P_vac1, dt_min) - P_vac1)
         P_vac2 += (dt_min / 0.25) * (pid_PIR2.step(P_vac2, dt_min) - P_vac2)
-        T1 += (dt_min / 5.5) * (vac_T(P_vac1, 1) - T1)
-        T2 += (dt_min / 5.5) * (vac_T(P_vac2, 2) + 0.35 * (T1 - 55.0) - T2)
+        # Perturbaciones termicas sobre T1 (open loop): sobretemperatura de la alimentacion previa (+0.45 K/K, como en el tren integrado)
+        # y agua de dilucion mas fria que 60 C (cada K menos baja la mezcla ~ F_303/F_1 * Cp_agua/Cp_mezcla).
+        dT_in = T_in_extra if t >= 40.0 else 0.0
+        dT_dil = -(F_303_actual / max(F_1, 1.0)) * (60.0 - T_agua_dilucion) * (4.172 / 2.180)
+        T1 += (dt_min / 5.5) * (vac_T(P_vac1, 1) + 0.45 * (dT_in + dT_dil) - T1)
+        T2 += (dt_min / 5.5) * (vac_T(P_vac2, 2) + 0.35 * (T1 - T1_sp) - T2)
 
         rec_factor = (1.0 / max(alpha_purge, 0.12)) ** 0.28
         C_ClO4_eq = 3.85 * (w_ClO4_1 / PFD_MG_CLO4["w_ClO4_1_nom_ppm"]) ** 1.35 * rec_factor
@@ -1021,7 +1095,10 @@ def simular_recirculacion_y_magnesio(
 
         d_Mg = max((C_Mg_B3520 - 9.20) / 9.20, 0.0)
         salting = 0.85 * d_Mg if hipotesis_mg in ("salting_out", "combinada", "combined") else 0.0
-        C_sat_eff = 4.50 - salting
+        C_sat_eff = c_sat_clo4_gL(T2, 0.0) - salting      # satura a la T real de A3210 (y cae con el Mg2+)
+        if trim_T2:       # supervisor de margen: sube T2_sp (si la razon ClO4/Csat supera margen_sat) -> +solubilidad, -KNO3
+            exceso = C_ClO4_B3520 / max(C_sat_eff, 1e-6) - margen_sat
+            dT2_trim += (dt_min / 10.0) * (float(np.clip(exceso * 60.0, 0.0, dT2_max)) - dT2_trim)
 
         keff_mult = (1.0 + 0.45 * d_Mg) if hipotesis_mg in ("cinetica_particion", "kinetic_partition", "combinada", "combined") else 1.0
         d50_eq = 185.0 - (28.0 * d_Mg if hipotesis_mg in ("cinetica_particion", "kinetic_partition", "combinada", "combined") else 0.0)
@@ -1035,7 +1112,8 @@ def simular_recirculacion_y_magnesio(
         ppm_Mg_17 = moisture_17 * w_Mg_lav
 
         water_loss = 0.42 * max(F_303_actual - 27.14, 0.0)
-        M_KNO3 += (dt_min / 15.0) * (66.5 + 10.0 * (1.0 - alpha_purge) - water_loss - M_KNO3)
+        T2_perdida_KNO3 = KNO3_PERDIDA_T_t_h_por_C * max(T2 - 40.0, 0.0) + KNO3_PERDIDA_T_t_h_por_C * max(T1 - 55.0, 0.0) * (2.0 / 1.82)
+        M_KNO3 += (dt_min / 15.0) * (66.5 + 10.0 * (1.0 - alpha_purge) - water_loss - T2_perdida_KNO3 - M_KNO3)
 
         rem_eff = 1.0 - (1.0 - 0.899) * (185.0 / max(d50_2, 90.0)) ** 0.85
         w_ClO4_ML_ref += (dt_min / 30.0) * (738.0 * (ppm_17 / 203.5) - w_ClO4_ML_ref)
@@ -1050,6 +1128,7 @@ def simular_recirculacion_y_magnesio(
             "C_sat_eff": C_sat_eff, "C_sat_KClO4_eff": C_sat_eff,
             "F_rec_t_h": F_rec_B3520, "alpha_purge_pct": 100.0 * alpha_purge,
             "M_KNO3_t_h": M_KNO3, "ppm_ClO4_final_6000": ppm_final_6000,
+            "F_303_t_h": F_303_actual, "dT2_trim_C": dT2_trim, "T2_sp_C": T2_sp_nom + dT2_trim, "P_vac1_bar": P_vac1, "P_vac2_bar": P_vac2, "sat_ratio": C_ClO4_B3520 / max(C_sat_eff, 1e-6), "perdida_KNO3_T_t_h": T2_perdida_KNO3, "R_eff": R_eff, "T1_C": T1, "T2_C": T2, "coprecip_ppm": coprecip_ppm,
             "ppm_Mg_crudo_17": ppm_Mg_17, "ppm_Mg_final_6000": ppm_Mg_final_6000,
         })
     return pd.DataFrame(hist)
@@ -1110,3 +1189,73 @@ def identificar_Kcu(lo=0.012, hi=0.013, n_iter=9):
     xs, tt = x[m], d.t_min.values[m]
     z = np.where((xs[:-1] < 0) & (xs[1:] >= 0))[0]
     return Kcu, float(np.mean(np.diff(tt[z])))
+
+# ---------------------------------------------------------------------------------------------
+# Analisis de estrategias, agua minima y temperatura sobre simular_recirculacion_y_magnesio
+PPM_NORMA = 40.0            # ppm de ClO4- en producto refinado (KPI de SQM)
+
+ESTRATEGIAS_EXCURSION = {
+    "1. Sin reciclo (actual)": dict(modo_reciclo="sin_reciclo_actual", use_AIT3105=False),
+    "2. Reciclo fijo": dict(modo_reciclo="reciclo_fijo", use_AIT3105=False),
+    "3. AIT 3105 + AIC 3255": dict(modo_reciclo="reciclo_inteligente", use_AIT3105=True),
+    "4. AIT + AIC + supervisor T2 (propuesta)": dict(modo_reciclo="reciclo_inteligente", use_AIT3105=True, trim_T2=True),
+}
+
+
+def resumen_simulacion(d):
+    """Indicadores de una corrida de simular_recirculacion_y_magnesio."""
+    sat_P1 = float((d.P_vac1_bar <= VAC["P1_lim"][0] + 1e-4).mean() * 100.0)
+    return {"ppm_max": float(d.ppm_ClO4_final_6000.max()), "ppm_final": float(d.ppm_ClO4_final_6000.iloc[-1]),
+            "agua_media_t_h": float(d.F_303_t_h.mean()), "agua_max_t_h": float(d.F_303_t_h.max()),
+            "KNO3_medio_t_h": float(d.M_KNO3_t_h.mean()), "T1_max_C": float(d.T1_C.max()), "T2_max_C": float(d.T2_C.max()),
+            "T1_final_C": float(d.T1_C.iloc[-1]), "T2_final_C": float(d.T2_C.iloc[-1]), "perdida_KNO3_por_T_final_t_h": float(d.perdida_KNO3_T_t_h.iloc[-1]),
+            "dT2_max_C": float(d.dT2_trim_C.max()), "vacio_A3110_saturado_pct": sat_P1,
+            "perdida_KNO3_por_T_max_t_h": float(d.perdida_KNO3_T_t_h.max()), "razon_ClO4_sat_max": float(d.sat_ratio.max()),
+            "cumple_norma": bool(d.ppm_ClO4_final_6000.max() <= PPM_NORMA)}
+
+
+def comparar_estrategias_excursion(F303_max=None, **kw):
+    """Corre las estrategias de ESTRATEGIAS_EXCURSION bajo la excursion de ClO4- (+550 ppm, t = 40 min) y de Mg2+ (+35 %, t = 140 min)."""
+    sims = {n: simular_recirculacion_y_magnesio(F303_max=F303_max, **{**a, **kw}) for n, a in ESTRATEGIAS_EXCURSION.items()}
+    tabla = pd.DataFrame({n: resumen_simulacion(d) for n, d in sims.items()}).T
+    return sims, tabla
+
+
+def barrido_agua_optimo(caps=(12.0, 16.0, 20.0, 22.0, 24.0, 27.14, 30.0, 33.0, 36.0), margen=0.90, tol_KNO3=1.0, **kw):
+    """Barre el tope de agua F_303 con la estrategia propuesta (AIT + AIC + supervisor de T2) y elige el MINIMO que cumple.
+
+    Criterio (parametrizable): ppm_max <= margen * PPM_NORMA y KNO3 medio >= (mejor KNO3 del barrido - tol_KNO3). Entre los factibles se
+    toma el de menor agua media. Todos los topes se limitan a F303_MAX_AMBIENTAL.
+    """
+    filas = []
+    for cap in caps:
+        d = simular_recirculacion_y_magnesio("reciclo_inteligente", use_AIT3105=True, trim_T2=True, F303_max=cap, **kw)
+        filas.append({"tope_agua_t_h": min(cap, F303_MAX_AMBIENTAL), **resumen_simulacion(d)})
+    df = pd.DataFrame(filas)
+    mejor = df.KNO3_medio_t_h.max()
+    df["factible"] = (df.ppm_max <= margen * PPM_NORMA) & (df.KNO3_medio_t_h >= mejor - tol_KNO3)
+    fact = df[df.factible]
+    opt = None if fact.empty else fact.sort_values("agua_media_t_h").iloc[0].to_dict()
+    return df, opt
+
+
+def analisis_temperatura(**kw):
+    """Sobretemperatura de la alimentacion previa a la dilucion y cristalizador operando caliente, con sus correcciones."""
+    def run(**a): return resumen_simulacion(simular_recirculacion_y_magnesio("reciclo_inteligente", use_AIT3105=True, **{**kw, **a}))
+    filas = {}
+    for dT in (0.0, 5.0, 10.0, 15.0):
+        filas[f"Alimentacion +{dT:.0f} C (sin correccion)"] = run(T_in_extra=dT)
+    for nombre, a in (("+10 C con prealimentacion de vacio", dict(ff_temperatura=True)),
+                      ("+10 C con agua de dilucion a 35 C", dict(T_agua_dilucion=35.0)),
+                      ("+10 C con agua a 35 C + prealimentacion", dict(T_agua_dilucion=35.0, ff_temperatura=True)),
+                      ("+10 C con prealimentacion + supervisor T2", dict(ff_temperatura=True, trim_T2=True))):
+        filas[nombre] = run(T_in_extra=10.0, **a)
+    for T2 in (40.0, 42.0, 44.0, 46.0, 48.0):
+        filas[f"Cristalizador 2 en {T2:.0f} C"] = run(T2_sp=T2)
+    filas["Cristalizador 1 en 58 C"] = run(T1_sp=58.0)
+    return pd.DataFrame(filas).T
+
+
+def calor_enfriar_agua_dilucion_kW(F303_t_h=F303_NOM, T_inicial=60.0, T_final=35.0, cp_kJ_kgK=4.172):
+    """Carga termica del intercambiador que enfria el agua de dilucion [kW]."""
+    return F303_t_h * 1000.0 / 3600.0 * cp_kJ_kgK * (T_inicial - T_final)

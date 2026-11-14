@@ -345,3 +345,82 @@ def test_tren_integrado_incluye_magnesio_y_sintonias_identificadas():
         assert c in d.columns
     assert np.isfinite(d.ppm_Mg_final_6000).all()
     assert "Kc_T_override" in inspect.signature(sim_npt3).parameters
+
+
+# ---------------------------------------------------------------- agua minima, estrategias y temperatura (B6-B8)
+@pytest.fixture(scope="module")
+def estrategias():
+    return plant.comparar_estrategias_excursion()
+
+
+def test_saturacion_kclo4_vs_temperatura():
+    assert plant.sat_factor_T(40.0) == pytest.approx(1.0)
+    assert plant.sat_factor_T(25.0) == pytest.approx(3.48 / 6.54, rel=1e-6)       # dato de SQM bajo 40 C
+    Ts = np.linspace(25, 70, 40)
+    assert (np.diff([plant.sat_factor_T(t) for t in Ts]) > 0).all()               # mas T -> mas solubilidad
+    assert plant.c_sat_clo4_gL(40.0) == pytest.approx(plant.C_SAT_NOM_ClO4)
+    assert plant.c_sat_clo4_gL(40.0, d_Mg=0.35) < plant.c_sat_clo4_gL(40.0)       # el Mg2+ saca el KClO4 de solucion
+
+
+def test_tope_ambiental_de_agua_se_respeta(estrategias):
+    sims, tabla = estrategias
+    assert plant.F303_MAX_AMBIENTAL <= 36.0
+    assert (tabla.agua_max_t_h <= plant.F303_MAX_AMBIENTAL + 1e-6).all()
+    d = plant.simular_recirculacion_y_magnesio("reciclo_inteligente", use_AIT3105=True, F303_max=80.0)   # un tope mayor se recorta
+    assert d.F_303_t_h.max() <= plant.F303_MAX_AMBIENTAL + 1e-6
+    assert sim_npt3(duration_min=120.0).F_303_actual_t_h.max() <= plant.F303_MAX_AMBIENTAL + 1e-6
+
+
+def test_propuesta_cumple_la_norma_y_las_demas_no_bajo_la_excursion(estrategias):
+    _, tabla = estrategias
+    assert bool(tabla.loc["4. AIT + AIC + supervisor T2 (propuesta)", "cumple_norma"])
+    assert tabla.loc["4. AIT + AIC + supervisor T2 (propuesta)", "ppm_max"] < plant.PPM_NORMA
+    for n in ("1. Sin reciclo (actual)", "2. Reciclo fijo", "3. AIT 3105 + AIC 3255"):
+        assert not bool(tabla.loc[n, "cumple_norma"]), n        # el veredicto sale de la simulacion, no de un texto fijo
+
+
+def test_el_supervisor_de_T2_es_la_palanca_no_el_agua():
+    sin = plant.simular_recirculacion_y_magnesio("reciclo_inteligente", use_AIT3105=True, F303_max=36.0)
+    con = plant.simular_recirculacion_y_magnesio("reciclo_inteligente", use_AIT3105=True, trim_T2=True, F303_max=36.0)
+    assert sin.ppm_ClO4_final_6000.max() > plant.PPM_NORMA > con.ppm_ClO4_final_6000.max()
+    assert con.T2_C.max() > 40.5 and sin.T2_C.max() < 40.5
+
+
+def test_optimo_de_agua_bajo_el_tope_y_con_margen():
+    df, opt = plant.barrido_agua_optimo()
+    assert opt is not None
+    assert opt["agua_media_t_h"] <= plant.F303_MAX_AMBIENTAL and opt["agua_media_t_h"] < 36.8
+    assert opt["ppm_max"] <= 0.9 * plant.PPM_NORMA + 1e-9
+    fact = df[df.factible]
+    assert opt["agua_media_t_h"] == pytest.approx(fact.agua_media_t_h.min())      # es el minimo de los factibles
+
+
+def test_analisis_temperatura_resultados_cualitativos():
+    t = plant.analisis_temperatura()
+    base, caliente = t.loc["Alimentacion +0 C (sin correccion)"], t.loc["Alimentacion +10 C (sin correccion)"]
+    assert caliente.vacio_A3110_saturado_pct > 50.0 > base.vacio_A3110_saturado_pct       # alimentacion caliente satura el vacio de A3110
+    assert t.loc["+10 C con agua de dilucion a 35 C", "vacio_A3110_saturado_pct"] < 5.0        # agua fria devuelve el margen
+    assert t.loc["+10 C con agua a 35 C + prealimentacion", "T1_final_C"] == pytest.approx(55.0, abs=0.05)
+    c40, c42 = t.loc["Cristalizador 2 en 40 C"], t.loc["Cristalizador 2 en 42 C"]
+    assert c42.ppm_max < c40.ppm_max and c42.KNO3_medio_t_h < c40.KNO3_medio_t_h          # caliente: menos ClO4-, menos KNO3
+    assert c42.perdida_KNO3_por_T_final_t_h / 2.0 == pytest.approx(plant.KNO3_PERDIDA_T_t_h_por_C, rel=0.02)
+
+
+def test_calor_para_enfriar_el_agua_de_dilucion():
+    assert plant.calor_enfriar_agua_dilucion_kW() == pytest.approx(27.14 * 1000 / 3600 * 4.172 * 25.0, rel=1e-9)
+
+
+def test_notebook_06_sin_optimo_ni_veredictos_escritos_a_mano():
+    import json, os
+    ruta = os.path.join(os.path.dirname(__file__), "..", "notebooks", "06_Control_por_etapas_dilucion.ipynb")
+    src = "\n".join("".join(c["source"]) for c in json.load(open(ruta, encoding="utf-8"))["cells"] if c["cell_type"] == "code")
+    for prohibido in ("R* = 0.0973", "25.3 ppm", "np.log10(9.66)", "F_303* = 36.8", "(< 40 ppm)", "100 * np.exp", "ÓPTIMO GLOBAL (PARETO)", "+ 5.8", "Óptimo Económico"):
+        assert prohibido not in src, prohibido
+
+
+def test_supervisor_de_T2_en_el_modelo_de_agua_de_dilucion():
+    sin = plant.simular_planta_agua_dilucion_magnesio("AIT3105_and_Mg_trim", "smart_AIC3255", True)
+    con = plant.simular_planta_agua_dilucion_magnesio("AIT3105_and_Mg_trim", "smart_AIC3255", True, trim_T2=True)
+    assert sin.F_303.max() <= plant.F303_MAX_AMBIENTAL + 1e-6 and con.F_303.max() <= plant.F303_MAX_AMBIENTAL + 1e-6
+    assert sin.ppm_ClO4_final_6000.max() > plant.PPM_NORMA > con.ppm_ClO4_final_6000.max()
+    assert con.dT2_trim_C.max() > 0.5 and sin.dT2_trim_C.max() == 0.0

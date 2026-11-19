@@ -110,3 +110,43 @@ def stationary_grid(C_in: float, tau: float, T_C: float, p: dict, Lmax: float, b
     cum = np.cumsum(w) / w.sum()
     pct = {name: float(np.interp(q, cum, grid["edges"][1:])) for name, q in (("d10", .1), ("d50", .5), ("d90", .9))}
     return {"C": C, "N": N, "grid": grid, "M_T": float(p["rho_crystal_kg_m3"] * p["kv"] * w.sum()), **pct}
+
+
+# ------------------------------------------------------------------------------
+# Cinética de Disolución (Sub-saturación: C < C*, Nagy, Fujiwara & Braatz Ec. 11.31)
+# ------------------------------------------------------------------------------
+def dissolution_rate_m_s(C_kg_m3, C_star_kg_m3, p=None):
+    """
+    Tasa lineal de disolución D(-S) <= 0 [m/s] cuando C < C*:
+        D(-S) = -k_d * ((C* - C) / C*)^d_exp
+    """
+    C = float(C_kg_m3)
+    C_star = max(float(C_star_kg_m3), 1e-9)
+    if C >= C_star:
+        return 0.0
+    p = p or {}
+    k_d = float(p.get("kd_dissolution_m_s", 1.2e-5))
+    d_exp = float(p.get("d_dissolution_order", 1.0))
+    undersat = (C_star - C) / C_star
+    return -k_d * (undersat ** d_exp)
+
+
+def net_growth_or_dissolution_rate(C_kg_m3, C_star_kg_m3, T_K, p, allow_dissolution=True):
+    """
+    Velocidad lineal neta [m/s]: crecimiento G > 0 si C > C*, 0 en saturación,
+    y disolución D < 0 si C < C* (cuando allow_dissolution=True).
+    """
+    C = float(C_kg_m3)
+    C_star = max(float(C_star_kg_m3), 1e-9)
+    if C < C_star:
+        return dissolution_rate_m_s(C, C_star, p) if allow_dissolution else 0.0
+    if C == C_star:
+        return 0.0
+    sigma = (C - C_star) / C_star
+    kg = float(p.get("kg_m_s", p.get("k_g", 1.0e-6)))
+    g_ord = float(p.get("g_order", p.get("g", 1.31)))
+    Eg = float(p.get("Eg_J_mol", 0.0))
+    T_ref = float(p.get("T_ref_K", 313.15))
+    R_gas = 8.314462618
+    arrh = float(np.exp(-Eg / R_gas * (1.0 / max(float(T_K), 200.0) - 1.0 / T_ref))) if Eg != 0.0 else 1.0
+    return kg * arrh * (sigma ** g_ord)

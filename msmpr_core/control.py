@@ -528,3 +528,110 @@ class CommercialPID:
             self.I = tentative_I
         self.prev_pv = pv
         return float(np.clip(u_unsat, self.u_min, self.u_max))
+
+
+# ------------------------------------------------------------------------------
+# Control Multivariable y Prealimentación Avanzada (Etapas 4 y 5 del Roadmap)
+# ------------------------------------------------------------------------------
+def compute_rga(G):
+    """
+    Calcula la Matriz de Ganancias Relativas (RGA, Bristol 1966):
+        Lambda = G * (G^{-1})^T   (producto elemento a elemento de Hadamard)
+    """
+    G_arr = np.asarray(G, dtype=float)
+    if G_arr.ndim != 2 or G_arr.shape[0] != G_arr.shape[1]:
+        raise ValueError("La matriz de ganancias G debe ser cuadrada (n x n).")
+    cond = float(np.linalg.cond(G_arr))
+    G_inv = np.linalg.pinv(G_arr) if (not np.isfinite(cond) or cond > 1e12) else np.linalg.inv(G_arr)
+    return G_arr * G_inv.T
+
+
+def rga_from_plant(plant, x0, u0, d0,
+                   mv_names=("m_evap", "Q_out", "Q_dil_cmd", "alpha"),
+                   cv_names=("T_C", "V_m3", "rho_slurry_kg_m3", "ppm_ClO4"),
+                   rel_step=0.05, t_settle_s=7200.0, dt_s=30.0):
+    """
+    Estima numéricamente la matriz de ganancias estacionarias G y su RGA alrededor de (x0, u0, d0)
+    para validar el emparejamiento diagonal de lazos en A3110.
+    """
+    from msmpr_core.plant import simulate
+    m0 = plant.metrics(x0, u0, d0)
+    n = len(mv_names)
+    G = np.zeros((n, n), dtype=float)
+
+    for j, mv in enumerate(mv_names):
+        du = max(abs(float(u0[mv])) * rel_step, 1e-5)
+        u_pert = dict(u0)
+        u_pert[mv] = float(u0[mv]) + du
+        if mv == "alpha":
+            u_pert[mv] = float(np.clip(u_pert[mv], 0.05, 0.99))
+            du = u_pert[mv] - float(u0[mv])
+        res = simulate(
+            plant, x0, t_end_s=t_settle_s, dt_s=dt_s,
+            controller=lambda t, x, m, _u=u_pert: _u,
+            disturbance=lambda t, _d=d0: _d,
+        )
+        if isinstance(res, list):
+            last_m = res[-1]
+        elif hasattr(res, "iloc"):
+            last_m = {k: float(res[k].iloc[-1]) for k in cv_names if k in res}
+        else:
+            last_m = {k: float(res[k][-1]) for k in cv_names if k in res}
+        for i, cv in enumerate(cv_names):
+            y1 = float(last_m.get(cv, m0.get(cv, 0.0)))
+            y0 = float(m0.get(cv, 0.0))
+            G[i, j] = (y1 - y0) / du
+    return G, compute_rga(G)
+
+
+class LeadLagCompensator:
+    """
+    Compensador dinámico Lead-Lag discreto para prealimentación (Smith & Corripio; Stephanopoulos):
+        G_ff(s) = gain * (tau_lead * s + 1) / (tau_lag * s + 1)
+    Discretización implícita (incondicionalmente estable para cualquier dt > 0).
+    """
+    def __init__(self, tau_lead, tau_lag, gain=1.0, u0=0.0):
+        self.tau_lead = max(float(tau_lead), 0.0)
+        self.tau_lag = max(float(tau_lag), 1e-6)
+        self.gain = float(gain)
+        self.u_prev = float(u0)
+        self.y_prev = self.gain * float(u0)
+
+    def reset(self, u0=0.0):
+        self.u_prev = float(u0)
+        self.y_prev = self.gain * float(u0)
+
+    def step(self, u, dt):
+        u = float(u)
+        dt = max(float(dt), 1e-9)
+        num = (
+            self.tau_lag * self.y_prev
+            + self.gain * (self.tau_lead + dt) * u
+            - self.gain * self.tau_lead * self.u_prev
+        )
+        y = num / (self.tau_lag + dt)
+        self.u_prev = u
+        self.y_prev = float(y)
+        return float(y)
+
+
+def supersaturation_override_limit(C_in_kg_m3, C_star_kg_m3, R_cmd,
+                                   sigma_min=0.02, R_min=0.0, R_max=0.15):
+    """
+    Selector Override de Sobresaturación (Low-Selector Switch en FFIC 3102):
+    Garantiza que C_mix = C_in / (1 + R) >= (1 + sigma_min) * C_star, protegiendo el lecho
+    cristalino contra redisolución. El exceso (R_cmd - R_applied) se deriva a purga AIC 3255.
+    """
+    C_in = float(C_in_kg_m3)
+    C_req = max((1.0 + float(sigma_min)) * float(C_star_kg_m3), 1e-9)
+    R_sigma_max = float(R_min) if C_in <= C_req else (C_in / C_req) - 1.0
+    R_upper = min(float(R_max), max(float(R_min), R_sigma_max))
+    R_applied = float(np.clip(float(R_cmd), float(R_min), R_upper))
+    override_active = bool(float(R_cmd) > R_upper + 1e-12)
+    excess_ratio = max(float(R_cmd) - R_applied, 0.0)
+    return {
+        "R_applied": R_applied,
+        "R_sigma_max": float(R_sigma_max),
+        "override_active": override_active,
+        "excess_ratio": float(excess_ratio),
+    }

@@ -349,6 +349,7 @@ def simulate_plant_npt3_calibrated(
     tauI_T_override=None,
     tauD_T_override=None,
     vac_limits_override=None,
+    F_303_nom=F303_NOM, F_303_min=12.0, F_303_max=42.0,
 ):
     """Simula el tren integrado Área 2000 (B2510) -> Área 3000 (A3110/A3210/B3520) -> Área 6000.
 
@@ -369,7 +370,7 @@ def simulate_plant_npt3_calibrated(
     C_Mg_B3520 = PFD_MG_CLO4["C_Mg_MLK_lab_g_L"]
     w_ClO4_ML_ref = PFD_MG_CLO4["w_ClO4_234_ppm"]
     w_Mg_ML_ref = PFD_MG_CLO4["w_Mg_234_ppm"]
-    F_303_actual = F303_NOM
+    F_303_actual = F_303_nom
 
     is_osc = tuning_mode == "ZN_oscillatory"
     is_hopf = tuning_mode == "Hopf_limit_cycle"
@@ -418,7 +419,7 @@ def simulate_plant_npt3_calibrated(
     sens_LIC1 = DelayedSensor(0.20, 0.20, dt_min, 1.0)
     sens_LIC2 = DelayedSensor(0.20, 0.20, dt_min, 1.0)
     pid_AIC3255 = CommercialPID(-0.48 if is_osc else -0.28, 18.0 if is_osc else 45.0, 0.0, 4.00, 0.22, 0.08, 0.65)
-    pid_FIRC3103 = CommercialPID(Kc=1.25, tau_I=0.45, tau_D=0.0, sp=27.14, u_bias=27.14, u_min=12.0, u_max=42.0)
+    pid_FIRC3103 = CommercialPID(Kc=1.25, tau_I=0.45, tau_D=0.0, sp=F_303_nom, u_bias=F_303_nom, u_min=F_303_min, u_max=F_303_max)
 
     hist = []
     for k in range(n_steps):
@@ -435,14 +436,14 @@ def simulate_plant_npt3_calibrated(
         w_ClO4_pre += (dt_min / 8.0) * (w_ClO4_pre_target - w_ClO4_pre)
         w_Mg_pre += (dt_min / 8.0) * (w_Mg_pre_target - w_Mg_pre)
 
-        R_0 = R_0_NOM
+        R_0 = (F_303_nom / F_PRE_NOM)
         if use_AIT3105:
             ait3105_pv = sens_AIT3105.read(w_ClO4_pre)
             R_eff = R_0 + K_TRIM_AIT * (ait3105_pv - PFD_MG_CLO4["w_ClO4_pre_nom_ppm"])
         else:
             R_eff = R_0
 
-        F_303_sp = np.clip(F_pre * R_eff, 12.0, 42.0)
+        F_303_sp = np.clip(F_pre * R_eff, F_303_min, F_303_max)
         pid_FIRC3103.sp = F_303_sp
         valve_cmd = pid_FIRC3103.step(sens_FIRC3103.read(F_303_actual), dt_min)
         F_303_actual += (dt_min / 0.133) * (valve_cmd - F_303_actual)
@@ -471,7 +472,7 @@ def simulate_plant_npt3_calibrated(
         T1 += v_T1 * dt_min
         T2 += v_T2 * dt_min
 
-        dil_effect = -0.0004 * (F_303_actual - 27.14)
+        dil_effect = -0.0004 * (F_303_actual - F_303_nom)
         xS1_eq = 0.130 - 4.5e-4 * (F_6 - 390.23) - 0.003 * (T1 - 55.0) + dil_effect + (0.009 if t >= 25.0 else 0.0)
         xS1_eq += LEVEL["xS_level_gain"] * 0.130 * (L1 - 1.0)
         xS2_eq = 0.200 + 0.75 * (xS1 - 0.130) - 4.5e-4 * (F_11 - 390.23) - 0.0035 * (T2 - 40.0) + (0.008 if t >= 25.0 else 0.0)
@@ -542,6 +543,7 @@ def simular_planta_agua_dilucion_magnesio(
     theta_AIT_min=10.0,
     duration_min=360.0,
     dt_min=0.05,
+    F_303_nom=F303_NOM, F_303_min=12.0, F_303_max=50.0,
 ):
     """Simula el aporte del agua de dilución (F_303) y trim de Mg2+ bajo ruido coloreado de Ornstein-Uhlenbeck."""
     n_steps = int(duration_min / dt_min)
@@ -570,7 +572,7 @@ def simular_planta_agua_dilucion_magnesio(
     xS1, xS2 = 0.130, 0.200
     d50_1, d50_2 = 145.0, 185.0
     w_ClO4_ML_ref = 738.0
-    F_303_actual = 27.14
+    F_303_actual = F_303_nom
     M_KNO3_prod = 67.5 if recycle_mode == "no_recycle_actual" else 74.5
 
     ns = 1.0 if include_noise else 0.0
@@ -589,10 +591,10 @@ def simular_planta_agua_dilucion_magnesio(
     pid_PIR2 = CommercialPID(1.5, 0.3, 0.0, VAC["P2_nom"], VAC["P2_nom"], *VAC["P2_lim"])
     pid_DIR1 = CommercialPID(-650.0, 28.0, 0.0, 0.130, 390.23, 250.0, 520.0)
     pid_DIR2 = CommercialPID(-650.0, 28.0, 0.0, 0.200, 390.23, 250.0, 520.0)
-    pid_FIRC3103 = CommercialPID(1.30, 0.40, 0.0, 27.14, 27.14, 12.0, 50.0)
+    pid_FIRC3103 = CommercialPID(1.30, 0.40, 0.0, F_303_nom, F_303_nom, F_303_min, F_303_max)
     pid_AIC3255 = CommercialPID(-0.42, 20.0, 0.0, 3.92, 0.25, 0.12, 1.00)
 
-    R_0 = R_0_NOM
+    R_0 = (F_303_nom / F_PRE_NOM)
     hist = []
 
     for k in range(n_steps):
@@ -632,7 +634,7 @@ def simular_planta_agua_dilucion_magnesio(
             d_mg_in = max((ait_mg_pv - 8200.0) / 8200.0, 0.0)
             R_eff = R_0 + K_TRIM_AIT * max(ait_cl_pv - 3714.1, 0.0) + 0.065 * d_mg_in
 
-        F_303_sp = np.clip(F_pre * R_eff, 12.0, 50.0)
+        F_303_sp = np.clip(F_pre * R_eff, F_303_min, F_303_max)
         pid_FIRC3103.sp = F_303_sp
         v_cmd = pid_FIRC3103.step(s_FIRC3103.read(F_303_actual), dt_min)
         F_303_actual += (dt_min / 0.133) * (valve_gain * v_cmd - F_303_actual)
@@ -646,13 +648,13 @@ def simular_planta_agua_dilucion_magnesio(
         P_vac1 += (dt_min / 0.25) * (pid_PIR1.step(P_vac1, dt_min) - P_vac1)
         P_vac2 += (dt_min / 0.25) * (pid_PIR2.step(P_vac2, dt_min) - P_vac2)
 
-        T1 += (dt_min / 5.5) * (vac_T(P_vac1, 1) + 0.40 * (T_in_1 - 70.0) - 0.025 * (F_303_actual - 27.14) - T1)
+        T1 += (dt_min / 5.5) * (vac_T(P_vac1, 1) + 0.40 * (T_in_1 - 70.0) - 0.025 * (F_303_actual - F_303_nom) - T1)
         T2 += (dt_min / 5.5) * (vac_T(P_vac2, 2) + 0.35 * (T1 - 55.0) - T2)
 
         F_6 = pid_DIR1.step(s_DIR1.read(xS1), dt_min)
         F_11 = pid_DIR2.step(s_DIR2.read(xS2), dt_min)
 
-        xS1 += (dt_min / 9.0) * (0.130 - 4.5e-4 * (F_6 - 390.23) - 0.003 * (T1 - 55.0) - 0.00040 * (F_303_actual - 27.14) - xS1)
+        xS1 += (dt_min / 9.0) * (0.130 - 4.5e-4 * (F_6 - 390.23) - 0.003 * (T1 - 55.0) - 0.00040 * (F_303_actual - F_303_nom) - xS1)
         xS2 += (dt_min / 9.0) * (0.200 + 0.70 * (xS1 - 0.130) - 4.5e-4 * (F_11 - 390.23) - 0.0035 * (T2 - 40.0) - xS2)
 
         rec_factor = (1.0 / max(alpha_purge, 0.12)) ** 0.18
@@ -664,7 +666,7 @@ def simular_planta_agua_dilucion_magnesio(
         C_ClO4_B3520 += (dt_min / 16.0) * (4.00 * (C_ClO4_A3210 / 3.95) * rec_factor - C_ClO4_B3520)
 
         d_Mg_proc = max((C_Mg_A3210 - 8.95) / 8.95, 0.0)
-        water_added = max(F_303_actual - 27.14, 0.0)
+        water_added = max(F_303_actual - F_303_nom, 0.0)
         C_sat_KClO4_40C = 4.38 - 1.15 * d_Mg_proc + 0.042 * water_added
 
         d50_1 += (dt_min / 14.0) * (145.0 - 25.0 * max((C_Mg_A3110 - 8.10) / 8.10, 0.0) + 0.55 * water_added - d50_1)
@@ -700,6 +702,7 @@ def simular_AIT_AIC_por_flujo_agua(
     include_noise=True,
     duration_min=320.0,
     dt_min=0.05,
+    F_303_nom=F303_NOM, F_303_min=12.0, F_303_max=52.0,
 ):
     """Evalúa los lazos AIT 3105 y AIC 3255 en función del flujo objetivo de agua F_303 (óptimo 36.8 t/h)."""
     n_steps = int(duration_min / dt_min)
@@ -725,7 +728,7 @@ def simular_AIT_AIC_por_flujo_agua(
     v_B3520 = 0.0
     d50_2 = 185.0
     w_ClO4_ML_ref = 738.0
-    F_303_actual = 27.14
+    F_303_actual = F_303_nom
     alpha_purge = 0.25
     M_KNO3_prod = 72.8
 
@@ -734,7 +737,7 @@ def simular_AIT_AIC_por_flujo_agua(
     s_AIC3255 = DelayedSensor(10.0, 2.0, dt_min, C_ClO4_B3520, noise_std=0.02 * ns, seed=22)
     s_FIRC3103 = DelayedSensor(0.10, 0.08, dt_min, F_303_actual, noise_std=0.12 * ns, seed=23)
 
-    pid_FIRC3103 = CommercialPID(1.30, 0.40, 0.0, 27.14, 27.14, 12.0, 52.0)
+    pid_FIRC3103 = CommercialPID(1.30, 0.40, 0.0, F_303_nom, F_303_nom, F_303_min, F_303_max)
     pid_AIC3255 = CommercialPID(-0.35, 22.0, 0.0, 4.02, 0.25, 0.12, 0.80)
 
     hist = []
@@ -757,10 +760,10 @@ def simular_AIT_AIC_por_flujo_agua(
         ait_pv = s_AIT3105.read(w_ClO4_pre)
 
         if t < 45.0:
-            F_303_sp = 27.14
+            F_303_sp = F_303_nom
         else:
             factor_ait = np.clip((ait_pv - 3714.1) / max(delta_ClO4_ssk * 0.72, 1.0), 0.0, 1.15)
-            F_303_sp = np.clip(27.14 + (F_303_target - 27.14) * factor_ait, 12.0, 52.0)
+            F_303_sp = np.clip(F_303_nom + (F_303_target - F_303_nom) * factor_ait, F_303_min, F_303_max)
 
         pid_FIRC3103.sp = F_303_sp
         v_cmd = pid_FIRC3103.step(s_FIRC3103.read(F_303_actual), dt_min)
@@ -786,7 +789,7 @@ def simular_AIT_AIC_por_flujo_agua(
         C_Mg_B3520 += (dt_min / tau1_b) * (9.10 * (C_Mg_A3210 / 8.95) * (rec_factor ** 0.6) - C_Mg_B3520)
 
         d_Mg_proc = max((C_Mg_A3210 - 8.95) / 8.95, 0.0)
-        water_delta = F_303_actual - 27.14
+        water_delta = F_303_actual - F_303_nom
         C_sat_KClO4_40C = 4.02 - 1.12 * d_Mg_proc + 0.036 * water_delta
 
         d50_2_eq = 185.0 - 26.0 * d_Mg_proc + 0.60 * water_delta
@@ -798,7 +801,7 @@ def simular_AIT_AIC_por_flujo_agua(
         w_ClO4_lav_3000 = 4070.0 * (C_ClO4_B3520 / 4.00) * keff_mult
         ppm_ClO4_17 = moisture_17 * w_ClO4_lav_3000 + coprecip_ppm
 
-        excess_water = max(F_303_actual - 27.14, 0.0)
+        excess_water = max(F_303_actual - F_303_nom, 0.0)
         purge_loss = 10.5 * max(alpha_purge - 0.25, 0.0)
         M_KNO3_eq = 73.5 - 0.36 * excess_water - purge_loss
         M_KNO3_prod += (dt_min / 14.0) * (M_KNO3_eq - M_KNO3_prod)
@@ -825,6 +828,7 @@ def simular_robustez_parametros(
     duration_min=320.0,
     dt_min=0.05,
     seed=101,
+    F_303_nom=F303_NOM, F_303_min=12.0, F_303_max=50.0,
 ):
     """Evalúa la robustez del control PID frente a incertidumbre paramétrica (L-Alanina vs KNO3 real)."""
     n_steps = int(duration_min / dt_min)
@@ -846,16 +850,16 @@ def simular_robustez_parametros(
     C_ClO4_B3520, C_Mg_B3520 = 4.00, 9.10
     d50_base = 185.0 * (k_g_mult ** 0.28) / (k_b_mult ** 0.14)
     d50_2 = d50_base
-    w_ClO4_ML_ref, F_303_actual, alpha_purge = 738.0, 27.14, 0.25
+    w_ClO4_ML_ref, F_303_actual, alpha_purge = 738.0, F_303_nom, 0.25
 
     s_AIT3105 = DelayedSensor(10.0, 2.0, dt_min, w_ClO4_pre, noise_std=14.0, seed=seed + 1)
     s_AIT_Mg = DelayedSensor(10.0, 2.0, dt_min, w_Mg_pre, noise_std=30.0, seed=seed + 2)
     s_AIC3255 = DelayedSensor(10.0, 2.0, dt_min, C_ClO4_B3520, noise_std=0.018, seed=seed + 3)
     s_FIRC3103 = DelayedSensor(0.10, 0.08, dt_min, F_303_actual, noise_std=0.10, seed=seed + 4)
 
-    pid_FIRC3103 = CommercialPID(1.30, 0.40, 0.0, 27.14, 27.14, 12.0, 50.0)
+    pid_FIRC3103 = CommercialPID(1.30, 0.40, 0.0, F_303_nom, F_303_nom, F_303_min, F_303_max)
     pid_AIC3255 = CommercialPID(-0.48, 16.0, 0.0, 4.00, 0.25, 0.12, 0.85)
-    R_0 = R_0_NOM
+    R_0 = (F_303_nom / F_PRE_NOM)
 
     hist = []
     for k in range(n_steps):
@@ -882,9 +886,9 @@ def simular_robustez_parametros(
             d_mg_in = max((ait_mg_pv - 8400.0) / 8400.0, 0.0)
             aic_trim = 0.015 * max(aic_pv - 4.00, 0.0)
             R_eff = R_0 + K_TRIM_AIT * max(ait_pv - 3714.1, 0.0) + 0.055 * d_mg_in + aic_trim
-            F_303_sp = np.clip(F_pre * R_eff, 12.0, 50.0)
+            F_303_sp = np.clip(F_pre * R_eff, F_303_min, F_303_max)
         else:
-            F_303_sp = 27.14
+            F_303_sp = F_303_nom
 
         pid_FIRC3103.sp = F_303_sp
         v_cmd = pid_FIRC3103.step(s_FIRC3103.read(F_303_actual), dt_min)
@@ -906,7 +910,7 @@ def simular_robustez_parametros(
         C_Mg_B3520 += (dt_min / (14.0 * tau_scale)) * (9.10 * (C_Mg_A3210 / 8.95) * (rec_factor ** 0.6) - C_Mg_B3520)
 
         d_Mg_proc = max((C_Mg_A3210 - 8.95) / 8.95, 0.0)
-        water_delta = F_303_actual - 27.14
+        water_delta = F_303_actual - F_303_nom
         C_sat_KClO4_40C = 4.18 - 1.05 * d_Mg_proc + 0.044 * water_delta
         d50_2 += (dt_min / (15.0 * tau_3000_mult)) * (d50_base - 22.0 * d_Mg_proc + 0.55 * water_delta - d50_2)
 
@@ -933,6 +937,7 @@ def simular_recirculacion_y_magnesio(
     hipotesis_mg="combinada",           # "salting_out", "cinetica_particion", "combinada"
     duration_min=360.0,
     dt_min=0.05,
+    F_303_nom=F303_NOM, F_303_min=12.0, F_303_max=42.0,
 ):
     """Evalúa la recirculación B3520 -> A3110 y las 3 hipótesis de interacción Mg2+ / ClO4- con datos PFD y Base de datos.xlsx."""
     n_steps = int(duration_min / dt_min)
@@ -946,7 +951,7 @@ def simular_recirculacion_y_magnesio(
     k_gL_Mg = PFD_MG_CLO4["C_Mg_MLK_lab_g_L"] / 9.20
     w_ClO4_ML_ref = PFD_MG_CLO4["w_ClO4_234_ppm"]
     w_Mg_ML_ref = PFD_MG_CLO4["w_Mg_234_ppm"]
-    F_303_actual = F303_NOM
+    F_303_actual = F_303_nom
     M_KNO3 = 66.5 if modo_reciclo in ("sin_reciclo_actual", "no_recycle_actual") else 74.0
 
     s_TIR1 = DelayedSensor(1.0, 0.5, dt_min, T1)
@@ -959,7 +964,7 @@ def simular_recirculacion_y_magnesio(
     pid_TIR2 = CommercialPID(0.0055 * VAC["Kc_scale2"], 9.0, 0.4, 40.0, VAC["P2_nom"], *VAC["P2_lim"])
     pid_PIR1 = CommercialPID(1.5, 0.3, 0.0, VAC["P1_nom"], VAC["P1_nom"], *VAC["P1_lim"])
     pid_PIR2 = CommercialPID(1.5, 0.3, 0.0, VAC["P2_nom"], VAC["P2_nom"], *VAC["P2_lim"])
-    pid_FIRC3103 = CommercialPID(1.25, 0.45, 0.0, 27.14, 27.14, 12.0, 42.0)
+    pid_FIRC3103 = CommercialPID(1.25, 0.45, 0.0, F_303_nom, F_303_nom, F_303_min, F_303_max)
     pid_AIC3255 = CommercialPID(-0.38, 22.0, 0.0, 3.95, 0.25, 0.12, 1.00)
 
     hist = []
@@ -989,7 +994,7 @@ def simular_recirculacion_y_magnesio(
         w_ClO4_pre += (dt_min / 8.0) * (w_ClO4_pre_eq - w_ClO4_pre)
         w_Mg_pre += (dt_min / 8.0) * (w_Mg_pre_eq - w_Mg_pre)
 
-        R_0 = R_0_NOM
+        R_0 = (F_303_nom / F_PRE_NOM)
         if use_AIT3105:
             ait_pv = s_AIT3105.read(w_ClO4_pre)
             delta_Mg_trim = max((w_Mg_pre - PFD_MG_CLO4["w_Mg_pre_nom_ppm"]) / PFD_MG_CLO4["w_Mg_pre_nom_ppm"], 0.0)
@@ -997,7 +1002,7 @@ def simular_recirculacion_y_magnesio(
         else:
             R_eff = R_0
 
-        F_303_sp = np.clip(F_pre * R_eff, 12.0, 42.0)
+        F_303_sp = np.clip(F_pre * R_eff, F_303_min, F_303_max)
         pid_FIRC3103.sp = F_303_sp
         v_cmd = pid_FIRC3103.step(s_FIRC3103.read(F_303_actual), dt_min)
         F_303_actual += (dt_min / 0.133) * (v_cmd - F_303_actual)
@@ -1034,7 +1039,7 @@ def simular_recirculacion_y_magnesio(
         ppm_17 = moisture_17 * w_ClO4_lav + coprecip_ppm
         ppm_Mg_17 = moisture_17 * w_Mg_lav
 
-        water_loss = 0.42 * max(F_303_actual - 27.14, 0.0)
+        water_loss = 0.42 * max(F_303_actual - F_303_nom, 0.0)
         M_KNO3 += (dt_min / 15.0) * (66.5 + 10.0 * (1.0 - alpha_purge) - water_loss - M_KNO3)
 
         rem_eff = 1.0 - (1.0 - 0.899) * (185.0 / max(d50_2, 90.0)) ** 0.85
@@ -1110,3 +1115,23 @@ def identificar_Kcu(lo=0.012, hi=0.013, n_iter=9):
     xs, tt = x[m], d.t_min.values[m]
     z = np.where((xs[:-1] < 0) & (xs[1:] >= 0))[0]
     return Kcu, float(np.mean(np.diff(tt[z])))
+
+
+def magnesium_perchlorate_coupling(C_Mg_g_L, G_m_s, d50_um, p, C_Mg_ref=31.7):
+    """Acoplamiento Mg2+ -> ClO4-: salting-out, viscosidad/BPS y humedad residual en CF 3550."""
+    dMg = max(float(C_Mg_g_L) - float(C_Mg_ref), -15.0)
+    k_salt = float(p.get("k_salting_Mg_L_g", 0.012))
+    salting_factor = float(np.exp(-k_salt * dMg))
+    eta_ratio = max(1.0 + 0.018 * dMg, 0.75)
+    Kd_eq = float(p.get("Kd", 0.002))
+    Pe_cryst = min((float(G_m_s) / 2.0e-7) * eta_ratio * 0.35, 3.0)
+    Kd_eff = float(Kd_eq / (Kd_eq + (1.0 - Kd_eq) * np.exp(-Pe_cryst)))
+    w_moist_0 = float(p.get("cake_moisture_fraction", 0.0286))
+    d50_ratio = float(np.clip(537.0 / max(float(d50_um), 150.0), 0.6, 1.8))
+    w_moist_eff = float(w_moist_0 * (eta_ratio ** 0.25) * (d50_ratio ** 0.50))
+    return {
+        "salting_factor": salting_factor,
+        "eta_ratio": eta_ratio,
+        "Kd_eff": Kd_eff,
+        "w_moist_eff": w_moist_eff,
+    }

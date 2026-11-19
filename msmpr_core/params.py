@@ -338,3 +338,13 @@ PROVENANCE["MG_CLO4_PLANT_DATA"] = (
     "interno: conciliado desde Balance_de_masa_segun_PFD_completo.xlsx, "
     "Balances de Masa detallado v6.xlsx, Base de datos.xlsx, AQ SSKd.xlsx y AG NPT_3 (3000 y 6000)_.xlsx"
 )
+
+# --- Régimen ambientalmente sostenible de agua de dilución (0,5 t/h nominal) ---
+# Flujo real medido SSKd (10–15 nov 2026): 243.20 m3/h (0.06756 m3/s)
+# Agua de dilución propuesta: 0.50 t/h (0.50 m3/h) -> feed_dilution_fraction = 0.002056
+SOSTENIBLE_DILUCION_OVERRIDES = {
+    "feed_flow_m3_s": 243.20 / 3600.0,
+    "feed_dilution_fraction": 0.50 / 243.20,
+    "crystallizer_temperature_C": 57.48,
+    "cake_moisture_fraction": 0.0286,
+}

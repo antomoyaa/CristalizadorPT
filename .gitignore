@@ -2,3 +2,10 @@ __pycache__/
 *.pyc
 .DS_Store
 .ipynb_checkpoints/
+
+# Datos confidenciales SQM (solo en local, nunca en GitHub)
+data/*.xlsx
+!data/EJEMPLO_datos_largo_SINTETICO_A3110.xlsx
+*.DS_Store
+__pycache__/
+*.pyc

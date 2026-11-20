@@ -1,10 +1,19 @@
-# Especificación de producto (guía §5). PENDIENTE: pedir a SQM por escrito, con fuente, método y base.
-# Ningún valor de abajo está confirmado; 'null' = sin dato.
+# Especificacion de producto y parametros del Area 6000 (Refinacion) — Planta NPT3 SQM
+# Fuente: Informe de parametros, Balance de Masa Detallado v6 (SQM) y Base de Datos KPI Mensual (2025-2026).
 producto_tecnico:
-  wKNO3_min_pct_base_seca: null     # pureza mínima
-  ClO4_max_ppm: 40.0                # PROVISIONAL (informe de parámetros); la evaluación económica usa 100 ppm
-  base: null                        # seca/húmeda; ClO4- o KClO4 (1 ppm ClO4- = 1.393 ppm KClO4)
-  metodo_analitico: "cromatografía iónica"
-  fuente: null
-  fecha: null
-  objetivo_planta_ppm: null         # margen operacional (epsilon del frente de Pareto)
+  wKNO3_min_pct_base_seca: 99.5
+  wKNO3_entrada_refinacion: 0.95678
+  ClO4_max_ppm: 40.0
+  ClO4_reproceso_ppm: 100.0
+  base: "seca, expresada como ion ClO4- (1 ppm ClO4- = 1.393 ppm KClO4)"
+  metodo_analitico: "Cromatografia Ionica (CI)"
+  fuente: "Base de datos - KPI mensual.xlsx (5.531 muestras: 18,03 % > 40 ppm; 1,14 % > 100 ppm) y BM Detallado v6"
+  fecha: "2026-11-14"
+  objetivo_planta_ppm: 25.0
+
+refinacion_area_6000:
+  cristal_crudo_entrada_t_h: 76.76
+  producto_refinado_salida_t_h: 65.31
+  eficiencia_refinacion_pct: 85.08
+  agua_lavado_centrifugas_3000_t_h: 4.61
+  agua_lavado_centrifugas_6000_t_h: 10.0

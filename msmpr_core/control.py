@@ -666,3 +666,107 @@ def supersaturation_override_limit(C_in_kg_m3, C_star_kg_m3, R_cmd,
         "override_active": override_active,
         "excess_ratio": float(excess_ratio),
     }
+
+
+def dilution_kclo4_hard_constraint(
+    C_in_kg_m3,
+    C_star_kg_m3,
+    R_cmd,
+    T_stage2_C=43.0,
+    comp_ref=None,
+    F_pre_t_h=378.18,
+    F_dil_ref_t_h=27.14,
+    x_agua_sskd=0.3994,
+    sigma_kclo4_max=0.0,
+    dT_margin_min_C=0.0,
+    sigma_kno3_min=0.02,
+    R_min=0.00053,
+    R_max=0.00661,
+    termo=None,
+):
+    """
+    Acota la razón de dilución R = F_303 / F_pre bajo DOS restricciones duras simultáneas (EDT 4.3):
+      1. Cota inferior (restricción dura KClO4): exige sigma_KClO4(T_eval) <= sigma_kclo4_max
+         en T_eval = T_stage2_C - dT_margin_min_C usando dpbe.m_ClO4_sat / T_saturacion_KClO4
+         calibrados con el ensayo SQM (lnGamma0_KClO4 = 1.571, k_Mg parametrizable).
+      2. Cota superior (Override KNO3 + tope sostenible): garantiza C_mix >= (1 + sigma_kno3_min)*C*
+         y R <= R_max (ej. 2.50 / 378.18 = 0.00661 en régimen sostenible).
+
+    Si R_kclo4_min excede la cota superior factible (min(R_max, R_kno3_max)), el agua se clampa
+    en el techo seguro/sostenible y se activa `purge_required = True`, devolviendo la fracción
+    exacta `clo4_reduction_needed_frac` que debe remover el lazo AIC 3522 -> FV 3522.
+    """
+    from scipy.optimize import brentq
+    from msmpr_core import dpbe
+
+    comp0 = dict(dpbe.COMP_SSKD_DEFAULT if comp_ref is None else comp_ref)
+    F_pre = max(float(F_pre_t_h), 1e-6)
+    F_dil_ref = max(float(F_dil_ref_t_h), 0.0)
+    W_pre = max((F_pre + F_dil_ref) * float(x_agua_sskd) - F_dil_ref, 1e-6)
+    T_eval = float(T_stage2_C) - max(float(dT_margin_min_C), 0.0)
+
+    def _comp_at_R(R_val):
+        F_dil = max(float(R_val), 0.0) * F_pre
+        fac = (W_pre + F_dil_ref) / (W_pre + F_dil)
+        return {k: float(v) * fac for k, v in comp0.items()}
+
+    def _sigma_kclo4_at_R(R_val):
+        c = _comp_at_R(R_val)
+        c_eq = dict(c)
+        c_eq["K"] = min(c["K"], dpbe.m_K_eq_KNO3(T_eval, c, termo))
+        c_eq["NO3"] = c["NO3"] - (c["K"] - c_eq["K"])
+        return dpbe.sobresaturacion_salmuera("KClO4", T_eval, c_eq, termo)
+
+    # 1. Cota superior por Override de sobresaturación de KNO3 + tope de válvula
+    ov = supersaturation_override_limit(
+        C_in_kg_m3, C_star_kg_m3, R_cmd,
+        sigma_min=sigma_kno3_min, R_min=R_min, R_max=R_max,
+    )
+    R_upper = min(float(R_max), max(float(R_min), float(ov["R_sigma_max"])))
+
+    # 2. Cota inferior por restricción dura de saturación de KClO4
+    s_at_zero = _sigma_kclo4_at_R(0.0) - float(sigma_kclo4_max)
+    if s_at_zero <= 0.0:
+        R_kclo4_min = 0.0
+    else:
+        R_hi_search = max(R_upper, 0.50)
+        while _sigma_kclo4_at_R(R_hi_search) - float(sigma_kclo4_max) > 0.0 and R_hi_search < 5.0:
+            R_hi_search *= 2.0
+        if _sigma_kclo4_at_R(R_hi_search) - float(sigma_kclo4_max) > 0.0:
+            R_kclo4_min = float("inf")
+        else:
+            R_kclo4_min = float(brentq(lambda r: _sigma_kclo4_at_R(r) - float(sigma_kclo4_max), 0.0, R_hi_search))
+
+    # 3. Decisión final y derivación a purga AIC 3522 -> FV 3522 si no basta la dilución acotada
+    purge_required = bool(R_kclo4_min > R_upper + 1e-12)
+    if purge_required:
+        R_applied = R_upper
+    else:
+        R_lower = max(float(R_min), R_kclo4_min)
+        R_applied = float(np.clip(float(R_cmd), R_lower, R_upper))
+
+    c_app = _comp_at_R(R_applied)
+    mK_app = min(c_app["K"], dpbe.m_K_eq_KNO3(T_eval, c_app, termo))
+    m_clo4_sat_app = dpbe.m_ClO4_sat(T_eval, mK_app, c_app["Mg"], termo)
+    m_clo4_limit = m_clo4_sat_app * ((1.0 + float(sigma_kclo4_max)) ** 2)
+    clo4_red_frac = max(0.0, 1.0 - (m_clo4_limit / max(c_app["ClO4"], 1e-12)))
+
+    T_sat_app = dpbe.T_saturacion_KClO4(c_app, termo)
+    holgura_app = float(T_stage2_C) - T_sat_app
+
+    return {
+        "R_applied": float(R_applied),
+        "F_303_applied_t_h": float(R_applied * F_pre),
+        "R_kclo4_min": float(R_kclo4_min),
+        "F_303_kclo4_min_t_h": float(R_kclo4_min * F_pre),
+        "R_kno3_max": float(ov["R_sigma_max"]),
+        "R_upper_eff": float(R_upper),
+        "kno3_override_active": bool(ov["override_active"] or (float(R_cmd) > R_upper + 1e-12)),
+        "kclo4_constraint_active": bool(R_kclo4_min > max(float(R_min), float(R_cmd)) + 1e-12),
+        "purge_required": purge_required,
+        "clo4_reduction_needed_frac": float(clo4_red_frac),
+        "m_ClO4_applied": float(c_app["ClO4"]),
+        "m_ClO4_sat": float(m_clo4_sat_app),
+        "T_sat_KClO4_C": float(T_sat_app),
+        "holgura_termica_C": float(holgura_app),
+    }

@@ -115,3 +115,69 @@ def test_replay_modulo_contrafactual_sintetico():
     assert r_prop["Q_dil_t_h"].mean() < 0.10 * r_base["Q_dil_t_h"].mean()
     assert r_prop["ClO4_refi_ppm"].max() < 40.0
     assert r_prop["ClO4_refi_ppm"].max() < r_base["ClO4_refi_ppm"].max()
+
+
+def test_dpbe_solubilidad_kclo4_calibrada_sqm():
+    """Valida Apelblat KNO3/KClO4 y ajuste SQM (lnGamma0=1.571, T_sat=41.3 °C, ensayo 25-35 °C)."""
+    g_kno3_40 = dpbe.apelblat_molal("KNO3", 40.0) * dpbe.MOLAR_MASS_G_MOL["KNO3"] / 10.0
+    g_kclo4_40 = dpbe.apelblat_molal("KClO4", 40.0) * dpbe.MOLAR_MASS_G_MOL["KClO4"] / 10.0
+    assert abs(g_kno3_40 - 63.9) / 63.9 < 0.02
+    assert abs(g_kclo4_40 - 3.63) / 3.63 < 0.03
+
+    for T_exp, c_exp in [(35.0, 4.59), (30.0, 3.90), (25.0, 3.48)]:
+        c_pred = dpbe.c_KClO4_sat_g_L(T_exp, dpbe.COMP_SSKD_DEFAULT)
+        assert abs(c_pred - c_exp) / c_exp < 0.03
+    T_sat = dpbe.T_saturacion_KClO4(dpbe.COMP_SSKD_DEFAULT)
+    assert 40.5 <= T_sat <= 42.0
+
+
+def test_dpbe_salting_out_k_Mg_parametrizable():
+    """Un k_Mg < 0 debe reducir m_ClO4_sat y elevar T_saturacion_KClO4 al subir Mg2+."""
+    comp_hi_mg = dict(dpbe.COMP_SSKD_DEFAULT)
+    comp_hi_mg["Mg"] = 1.30 * dpbe.COMP_SSKD_DEFAULT["Mg"]
+
+    t_cero = dpbe.make_termo_sqm(k_Mg_KClO4=0.0)
+    t_neg = dpbe.make_termo_sqm(k_Mg_KClO4=-0.20)
+
+    mK = dpbe.m_K_eq_KNO3(40.0, comp_hi_mg, t_neg)
+    assert dpbe.m_ClO4_sat(40.0, mK, comp_hi_mg["Mg"], t_neg) < dpbe.m_ClO4_sat(40.0, mK, comp_hi_mg["Mg"], t_cero)
+    assert dpbe.T_saturacion_KClO4(comp_hi_mg, t_neg) > dpbe.T_saturacion_KClO4(comp_hi_mg, t_cero)
+
+
+def test_control_restriccion_dura_kclo4_y_derivacion_purga():
+    """
+    Verifica EDT 4.3:
+      - Caso A: en modo sostenible (F_303 <= 2.5 t/h) con SSKd sin purga a 43 °C, la restricción
+        dura de KClO4 supera el tope de agua y activa purge_required=True (AIC 3522 -> FV 3522).
+      - Caso B: con purga AIC 3522 activa (ClO4 reducido 25 %), cumple holgura >= 0 a 0.5 t/h.
+      - Caso C: con techo amplio de agua (40 t/h), el controlador eleva F_303 justo al mínimo
+        termodinámico de KClO4 (~16 t/h) sin violar la sobresaturación de KNO3.
+    """
+    out_sust = C.dilution_kclo4_hard_constraint(
+        C_in_kg_m3=660.0, C_star_kg_m3=600.0, R_cmd=0.50 / 378.18,
+        T_stage2_C=43.0, R_min=0.20 / 378.18, R_max=2.50 / 378.18,
+    )
+    assert out_sust["purge_required"] is True
+    assert out_sust["F_303_applied_t_h"] <= 2.50 + 1e-6
+    assert out_sust["F_303_kclo4_min_t_h"] > 10.0
+    assert 0.05 < out_sust["clo4_reduction_needed_frac"] < 0.25
+
+    comp_purged = dict(dpbe.COMP_SSKD_DEFAULT)
+    comp_purged["ClO4"] *= 0.75
+    out_ok = C.dilution_kclo4_hard_constraint(
+        C_in_kg_m3=660.0, C_star_kg_m3=600.0, R_cmd=0.50 / 378.18,
+        T_stage2_C=43.0, comp_ref=comp_purged,
+        R_min=0.20 / 378.18, R_max=2.50 / 378.18,
+    )
+    assert out_ok["purge_required"] is False
+    assert out_ok["holgura_termica_C"] >= 0.0
+    assert np.isclose(out_ok["F_303_applied_t_h"], 0.50, atol=1e-6)
+
+    out_wide = C.dilution_kclo4_hard_constraint(
+        C_in_kg_m3=660.0, C_star_kg_m3=600.0, R_cmd=0.50 / 378.18,
+        T_stage2_C=43.0, R_min=0.20 / 378.18, R_max=40.0 / 378.18,
+    )
+    assert out_wide["purge_required"] is False
+    assert out_wide["kclo4_constraint_active"] is True
+    assert abs(out_wide["holgura_termica_C"]) < 0.05
+    assert 14.0 < out_wide["F_303_applied_t_h"] < 18.0

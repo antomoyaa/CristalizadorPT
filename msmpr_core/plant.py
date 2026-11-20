@@ -439,7 +439,7 @@ def simulate_plant_npt3_calibrated(
         R_0 = (F_303_nom / F_PRE_NOM)
         if use_AIT3105:
             ait3105_pv = sens_AIT3105.read(w_ClO4_pre)
-            R_eff = R_0 + K_TRIM_AIT * (ait3105_pv - PFD_MG_CLO4["w_ClO4_pre_nom_ppm"])
+            R_eff = R_0 + (K_TRIM_AIT * (F_303_nom / F303_NOM)) * (ait3105_pv - PFD_MG_CLO4["w_ClO4_pre_nom_ppm"])
         else:
             R_eff = R_0
 
@@ -629,10 +629,10 @@ def simular_planta_agua_dilucion_magnesio(
         elif strategy == "high_water_manual":
             R_eff = 0.115
         elif strategy == "AIT3105_only":
-            R_eff = R_0 + K_TRIM_AIT * max(ait_cl_pv - 3714.1, 0.0)
+            R_eff = R_0 + (K_TRIM_AIT * (F_303_nom / F303_NOM)) * max(ait_cl_pv - 3714.1, 0.0)
         else:
             d_mg_in = max((ait_mg_pv - 8200.0) / 8200.0, 0.0)
-            R_eff = R_0 + K_TRIM_AIT * max(ait_cl_pv - 3714.1, 0.0) + 0.065 * d_mg_in
+            R_eff = R_0 + (K_TRIM_AIT * (F_303_nom / F303_NOM)) * max(ait_cl_pv - 3714.1, 0.0) + (0.065 * (F_303_nom / F303_NOM)) * d_mg_in
 
         F_303_sp = np.clip(F_pre * R_eff, F_303_min, F_303_max)
         pid_FIRC3103.sp = F_303_sp
@@ -884,8 +884,8 @@ def simular_robustez_parametros(
         ait_pv, ait_mg_pv = s_AIT3105.read(w_ClO4_pre), s_AIT_Mg.read(w_Mg_pre)
         if control_active:
             d_mg_in = max((ait_mg_pv - 8400.0) / 8400.0, 0.0)
-            aic_trim = 0.015 * max(aic_pv - 4.00, 0.0)
-            R_eff = R_0 + K_TRIM_AIT * max(ait_pv - 3714.1, 0.0) + 0.055 * d_mg_in + aic_trim
+            aic_trim = (0.015 * (F_303_nom / F303_NOM)) * max(aic_pv - 4.00, 0.0)
+            R_eff = R_0 + (K_TRIM_AIT * (F_303_nom / F303_NOM)) * max(ait_pv - 3714.1, 0.0) + (0.055 * (F_303_nom / F303_NOM)) * d_mg_in + aic_trim
             F_303_sp = np.clip(F_pre * R_eff, F_303_min, F_303_max)
         else:
             F_303_sp = F_303_nom
@@ -998,7 +998,7 @@ def simular_recirculacion_y_magnesio(
         if use_AIT3105:
             ait_pv = s_AIT3105.read(w_ClO4_pre)
             delta_Mg_trim = max((w_Mg_pre - PFD_MG_CLO4["w_Mg_pre_nom_ppm"]) / PFD_MG_CLO4["w_Mg_pre_nom_ppm"], 0.0)
-            R_eff = R_0 + K_TRIM_AIT * (ait_pv - PFD_MG_CLO4["w_ClO4_pre_nom_ppm"]) + 0.018 * delta_Mg_trim
+            R_eff = R_0 + (K_TRIM_AIT * (F_303_nom / F303_NOM)) * (ait_pv - PFD_MG_CLO4["w_ClO4_pre_nom_ppm"]) + (0.018 * (F_303_nom / F303_NOM)) * delta_Mg_trim
         else:
             R_eff = R_0
 

@@ -536,52 +536,83 @@ class CommercialPID:
 def compute_rga(G):
     """
     Calcula la Matriz de Ganancias Relativas (RGA, Bristol 1966):
-        Lambda = G * (G^{-1})^T   (producto elemento a elemento de Hadamard)
+        Lambda = G * (G^{-1})^T   (producto de Hadamard)
+    Equilibra filas y columnas antes de invertir (la RGA es invariante a escala),
+    evitando mal condicionamiento por diferencias de unidades (kg/s vs m3/s vs fraccion).
     """
     G_arr = np.asarray(G, dtype=float)
     if G_arr.ndim != 2 or G_arr.shape[0] != G_arr.shape[1]:
         raise ValueError("La matriz de ganancias G debe ser cuadrada (n x n).")
-    cond = float(np.linalg.cond(G_arr))
-    G_inv = np.linalg.pinv(G_arr) if (not np.isfinite(cond) or cond > 1e12) else np.linalg.inv(G_arr)
-    return G_arr * G_inv.T
+    row_s = np.linalg.norm(G_arr, axis=1)
+    row_s = np.where(row_s > 1e-15, row_s, 1.0)
+    G_r = G_arr / row_s[:, None]
+    col_s = np.linalg.norm(G_r, axis=0)
+    col_s = np.where(col_s > 1e-15, col_s, 1.0)
+    G_eq = G_r / col_s[None, :]
+    cond = float(np.linalg.cond(G_eq))
+    G_inv = np.linalg.pinv(G_eq) if (not np.isfinite(cond) or cond > 1e12) else np.linalg.inv(G_eq)
+    return G_eq * G_inv.T
 
 
 def rga_from_plant(plant, x0, u0, d0,
-                   mv_names=("m_evap", "Q_out", "Q_dil_cmd", "alpha"),
-                   cv_names=("T_C", "V_m3", "rho_slurry_kg_m3", "ppm_ClO4"),
-                   rel_step=0.05, t_settle_s=7200.0, dt_s=30.0):
+                   mv_names=("m_evap", "Q_dil_cmd", "alpha"),
+                   cv_names=("T_C", "slurry_density_kg_m3", "ppm_ClO4"),
+                   rel_step=0.02, t_settle_s=28800.0, dt_s=5.0,
+                   hold_volume=True):
     """
-    Estima numéricamente la matriz de ganancias estacionarias G y su RGA alrededor de (x0, u0, d0)
-    para validar el emparejamiento diagonal de lazos en A3110.
+    Estima la matriz de ganancias estacionarias G y su RGA (Bristol 1966) integrando
+    directamente con plant.step() y leyendo el estado x = [V, T, C, CP, ..., Qd, S, Sm].
+    Analiza por defecto el bloque 3x3 autorregulado:
+        CVs = (T_C [x[1]], slurry_density_kg_m3 [DIRCAHL], ppm_ClO4)
+        MVs = (m_evap [TIR/PIRCAL], Q_dil_cmd [FIRC], alpha [AIC/FV])
+    manteniendo dV/dt = 0 exacto mediante Q_out (emparejamiento V <-> Q_out, lambda = 1).
     """
-    from msmpr_core.plant import simulate
-    m0 = plant.metrics(x0, u0, d0)
-    n = len(mv_names)
-    G = np.zeros((n, n), dtype=float)
+    x0_arr = np.asarray(x0, dtype=float)
+    m0 = plant.metrics(x0_arr, u0, d0)
+
+    def _get_val(cv, x_vec, m_dict):
+        if cv in m_dict:
+            return float(m_dict[cv])
+        if cv in ("V", "V_m3"):
+            return float(x_vec[0])
+        if cv in ("T_C", "T", "T_cryst_C"):
+            return float(x_vec[1])
+        raise KeyError(f"CV '{cv}' no encontrada en plant.metrics() ni en estado x.")
+
+    n_steps = max(int(round(float(t_settle_s) / float(dt_s))), 1)
+    G = np.zeros((len(cv_names), len(mv_names)), dtype=float)
+    rho_w = float(plant.p.get("rho_water_kg_m3", 1000.0))
 
     for j, mv in enumerate(mv_names):
-        du = max(abs(float(u0[mv])) * rel_step, 1e-5)
+        du = max(abs(float(u0[mv])) * rel_step, 1e-6)
         u_pert = dict(u0)
         u_pert[mv] = float(u0[mv]) + du
         if mv == "alpha":
             u_pert[mv] = float(np.clip(u_pert[mv], 0.05, 0.99))
             du = u_pert[mv] - float(u0[mv])
-        res = simulate(
-            plant, x0, t_end_s=t_settle_s, dt_s=dt_s,
-            controller=lambda t, x, m, _u=u_pert: _u,
-            disturbance=lambda t, _d=d0: _d,
-        )
-        if isinstance(res, list):
-            last_m = res[-1]
-        elif hasattr(res, "iloc"):
-            last_m = {k: float(res[k].iloc[-1]) for k in cv_names if k in res}
-        else:
-            last_m = {k: float(res[k][-1]) for k in cv_names if k in res}
+
+        x = x0_arr.copy()
+        for _ in range(n_steps):
+            if hold_volume and mv != "Q_out":
+                # Balance exacto dV/dt = Q_stock + Qd - alpha * Q_out - m_evap / rho_w = 0
+                Qd_cur = float(x[10]) if len(x) > 10 else float(u_pert["Q_dil_cmd"])
+                u_pert["Q_out"] = max(
+                    (float(d0["Q_stock"]) + Qd_cur - float(u_pert["m_evap"]) / rho_w) / max(float(u_pert["alpha"]), 1e-3),
+                    1e-6,
+                )
+            x = plant.step(x, u_pert, d0, dt_s)
+        last_m = plant.metrics(x, u_pert, d0)
+
         for i, cv in enumerate(cv_names):
-            y1 = float(last_m.get(cv, m0.get(cv, 0.0)))
-            y0 = float(m0.get(cv, 0.0))
+            y1 = _get_val(cv, x, last_m)
+            y0 = _get_val(cv, x0_arr, m0)
             G[i, j] = (y1 - y0) / du
-    return G, compute_rga(G)
+
+    return G, compute_rga(G), tuple(cv_names), tuple(mv_names)
+
+
+
+
 
 
 class LeadLagCompensator:

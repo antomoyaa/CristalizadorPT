@@ -9,3 +9,10 @@ data/*.xlsx
 *.DS_Store
 __pycache__/
 *.pyc
+
+# Datos confidenciales SQM (se mantienen solo en local, nunca en GitHub)
+data/*.xlsx
+!data/EJEMPLO_datos_largo_SINTETICO_A3110.xlsx
+*.DS_Store
+__pycache__/
+*.pyc
